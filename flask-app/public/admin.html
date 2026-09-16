@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Schedule admin</title>
+<link rel="stylesheet" href="css/style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <h1>Schedule admin</h1>
+  <a href="index.html">Employee form</a>
+</header>
+
+<main>
+  <div class="card" id="loginCard">
+    <h2>Admin login</h2>
+    <input type="password" id="passwordInput" placeholder="Admin password">
+    <button id="loginBtn" style="margin-top:10px;">Log in</button>
+    <div id="loginMsg"></div>
+  </div>
+
+  <div id="appArea" style="display:none;">
+    <div class="tabs">
+      <button data-tab="diagnostics" class="active">Week check<span id="diagBadge"></span></button>
+      <button data-tab="generate">Generate</button>
+      <button data-tab="employees">Employees</button>
+      <button data-tab="overview">Submissions</button>
+      <button data-tab="settings">Settings</button>
+    </div>
+
+    <section id="tab-diagnostics" class="card">
+      <h2>Can this week be scheduled?</h2>
+      <p class="hint">Everything below is arithmetic on what people submitted — no solver
+        run needed. Blockers make a schedule provably impossible; squeezes are the places
+        with no room left to maneuver.</p>
+      <div class="row" style="margin-bottom:14px;">
+        <button id="refreshDiagBtn" class="secondary">Re-check</button>
+      </div>
+      <div id="diagArea"></div>
+    </section>
+
+    <section id="tab-generate" class="card" style="display:none;">
+      <h2>Generate the schedule</h2>
+      <p class="hint">Runs the OR-Tools solver on the server against everyone's current
+        submissions. It finds a schedule that satisfies every rule and balances preferred
+        hours as evenly as it can, or tells you exactly which rule is in the way.</p>
+      <div class="row">
+        <button id="generateBtn">Generate schedule</button>
+        <button id="regenerateBtn" class="secondary" style="display:none;">Try a different one</button>
+        <button id="downloadBtn" class="secondary" style="display:none;">Download .xlsx</button>
+      </div>
+      <div id="generateMsg"></div>
+      <div id="fairnessOutput"></div>
+      <div id="scheduleOutput" style="margin-top:16px;"></div>
+    </section>
+
+    <section id="tab-employees" class="card" style="display:none;">
+      <h2>Employee roster</h2>
+      <p class="hint">Set who's a lead and their weekly hour targets. People are added
+        automatically the first time they submit, unless you turn that off in Settings.</p>
+      <div class="row" style="margin-bottom:12px;">
+        <input type="text" id="newEmpName" placeholder="Add someone by name" style="max-width:260px;">
+        <button id="addEmpBtn" class="secondary">Add</button>
+      </div>
+      <div class="scroll-x" id="employeeTableWrap"></div>
+    </section>
+
+    <section id="tab-overview" class="card" style="display:none;">
+      <h2>Who's submitted</h2>
+      <div id="overviewArea"></div>
+    </section>
+
+    <section id="tab-settings" class="card" style="display:none;">
+      <h2>Scheduling rules</h2>
+      <div id="settingsForm"></div>
+      <button id="saveSettingsBtn" style="margin-top:16px;">Save settings</button>
+      <div id="settingsMsg"></div>
+    </section>
+  </div>
+</main>
+
+<script src="js/admin.js"></script>
+</body>
+</html>

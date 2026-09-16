@@ -1,0 +1,7 @@
+Flask==3.0.3
+peewee==3.17.6
+ortools==9.10.4067
+gunicorn==22.0.0
+# Only needed when DATABASE_URL points at Postgres (e.g. Neon).
+# Harmless to install either way.
+psycopg2-binary==2.9.9

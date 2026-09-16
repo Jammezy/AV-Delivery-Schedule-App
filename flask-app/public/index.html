@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Submit your availability</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>Weekly availability</h1>
+  <a href="admin.html">Admin</a>
+</header>
+
+<main>
+  <div class="card">
+    <h2>Who are you?</h2>
+    <input type="text" id="nameInput" list="rosterList" placeholder="First and last name"
+           autocomplete="off" autocapitalize="words">
+    <datalist id="rosterList"></datalist>
+    <p class="hint">Pick your name from the list so your submission updates instead of
+      creating a second copy of you.</p>
+    <div class="row" style="margin-top:10px;">
+      <button id="loadBtn" class="secondary">Load my last submission</button>
+    </div>
+    <div id="whoMsg"></div>
+  </div>
+
+  <div class="card">
+    <h2>Paint your week</h2>
+    <p class="hint">Drag across the grid to fill it in. Mark everything you
+      <em>can</em> work in blue, then go back over the hours you'd
+      <em>rather</em> work in gold. Preferred hours count as available too, so
+      gold always sits inside blue.</p>
+
+    <div class="paint-bar" role="group" aria-label="Painting mode">
+      <button type="button" class="paint-mode" data-mode="1" aria-pressed="true">
+        <i class="swatch can"></i> Can work
+      </button>
+      <button type="button" class="paint-mode" data-mode="2" aria-pressed="false">
+        <i class="swatch want"></i> Would prefer
+      </button>
+      <button type="button" class="paint-mode" data-mode="0" aria-pressed="false">
+        <i class="swatch none"></i> Erase
+      </button>
+      <span class="paint-spacer"></span>
+      <button type="button" id="copyMonBtn" class="secondary">Copy first day to all</button>
+      <button type="button" id="clearAllBtn" class="secondary">Clear everything</button>
+    </div>
+
+    <div class="scroll-x"><div id="grid" class="week-grid"></div></div>
+
+    <div class="tally">
+      <span>Available <b id="tallyAvail">0</b> hrs</span>
+      <span>Preferred <b id="tallyPref">0</b> hrs</span>
+      <span id="tallyTarget" class="hint" style="margin:0;"></span>
+    </div>
+    <div id="dayNotes"></div>
+  </div>
+
+  <div id="msgArea"></div>
+  <button id="submitBtn">Submit availability</button>
+</main>
+
+<script src="js/employee.js"></script>
+</body>
+</html>
