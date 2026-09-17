@@ -22,7 +22,9 @@ if DATABASE_URL:
     from playhouse.db_url import connect as _connect
     # Neon and most hosted Postgres providers hand out postgres:// URLs
     if DATABASE_URL.startswith("postgres://"):
-        DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
+        DATABASE_URL = "postgresql+psycopg://" + DATABASE_URL[len("postgres://"):]
+    elif DATABASE_URL.startswith("postgresql://"):
+        DATABASE_URL = "postgresql+psycopg://" + DATABASE_URL[len("postgresql://"):]
     db = _connect(DATABASE_URL)
 else:
     db = SqliteDatabase(
