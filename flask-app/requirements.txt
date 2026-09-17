@@ -3,4 +3,3 @@ peewee==3.17.6
 ortools>=9.10
 gunicorn==22.0.0
 psycopg[binary]
-playhouse
