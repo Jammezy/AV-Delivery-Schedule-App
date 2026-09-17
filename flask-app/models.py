@@ -19,21 +19,10 @@ from peewee import (
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
 if DATABASE_URL:
-    import psycopg
-    from peewee import PostgresqlDatabase
+    from playhouse.db_url import connect as _connect
     if DATABASE_URL.startswith("postgres://"):
-        DATABASE_URL = DATABASE_URL[len("postgres://"):]
-    elif DATABASE_URL.startswith("postgresql://"):
-        DATABASE_URL = DATABASE_URL[len("postgresql://"):]
-    # parse user:pass@host:port/dbname
-    userinfo, _, hostinfo = DATABASE_URL.partition("@")
-    user, _, password = userinfo.partition(":")
-    hostport, _, dbname = hostinfo.partition("/")
-    host, _, port = hostport.partition(":")
-    db = PostgresqlDatabase(
-        dbname, user=user, password=password,
-        host=host, port=int(port) if port else 5432,
-    )
+        DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
+    db = _connect(DATABASE_URL)
 else:
     db = SqliteDatabase(
         os.environ.get("DB_PATH", "schedule.db"),
