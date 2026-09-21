@@ -26,8 +26,8 @@ if ADMIN_PASSWORD == "admin123":
           "before anyone else can reach this site. ***\n")
 
 TOKEN_TTL = datetime.timedelta(hours=8)
-MAX_LOGIN_ATTEMPTS = 8
-LOGIN_WINDOW = datetime.timedelta(minutes=15)
+MAX_LOGIN_ATTEMPTS = 10
+LOGIN_WINDOW = datetime.timedelta(minutes=10)
 KEY_PATTERN = re.compile(r"^[A-Za-z]{2,4}_\d{2}$")
 
 _tokens = {}
