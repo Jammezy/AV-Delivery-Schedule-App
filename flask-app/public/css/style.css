@@ -288,3 +288,14 @@ table.data-table tbody tr:nth-child(even) { background: #fafbfc; }
   header.topbar, .tabs, button, .paint-bar { display: none !important; }
   .card { border: none; padding: 0; }
 }
+.availability-viewer { display:grid; grid-template-columns:minmax(180px, 240px) minmax(0, 1fr); gap:16px; }
+.viewer-list { max-height:440px; overflow:auto; }
+.viewer-person { display:block; width:100%; text-align:left; margin-bottom:6px; }
+.viewer-person[aria-pressed="true"] { outline:3px solid #1f4e78; }
+.viewer-level-1 { background:#dbe7f1; color:#18354c; }
+.viewer-level-2 { background:#ffe9b3; color:#493500; }
+.selection-person { display:inline-block; margin:5px 14px 5px 0; }
+button:focus-visible, select:focus-visible, textarea:focus-visible { outline:3px solid #1f4e78; outline-offset:3px; }
+#folderSelect { max-width:100%; padding:8px; }
+#commentInput { width:100%; box-sizing:border-box; }
+@media (max-width:700px) { .availability-viewer { grid-template-columns:1fr; } .viewer-list { max-height:180px; } }

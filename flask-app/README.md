@@ -208,7 +208,7 @@ schedule with a note, instead of a false impossibility.
 - Names are matched case-insensitively, so "avery", "Avery" and "AVERY" are one
   person instead of three separate people all entering the solver.
 - Availability payloads are validated against the configured days and hours.
-- Login is rate-limited to 8 attempts per 15 minutes and uses a constant-time
+- Login is rate-limited to 10 attempts per 10 minutes and uses a constant-time
   comparison.
 - Database connections are opened and closed per request.
 
@@ -243,3 +243,56 @@ flask-app/
     js/employee.js    Painting grid
     js/admin.js       Dashboard, diagnostics, Excel export
 ```
+
+
+## Semester folders and durable records
+
+Availability, comments, folders, server sessions, and generated snapshots are
+stored in the backend database. There is no availability expiration. A successful
+submission follows a committed database transaction. Employee access remains
+name-based; folders and stable IDs do not authenticate employees.
+
+On first startup, an atomic, idempotent migration copies legacy availability into
+`Imported availability`, retaining the old availability table, employees, and
+settings. PostgreSQL uses a transaction advisory lock to serialize concurrent
+migration and folder/submission writes. No database reset is required.
+
+Keep the existing Render `DATABASE_URL` pointing to persistent PostgreSQL/Neon.
+Do not substitute SQLite on Render's ephemeral filesystem. For local SQLite,
+set `DATABASE_PATH` to a persistent disk path. `DB_PATH` is also supported.
+A redeploy or process restart must reuse the same database.
+
+Before deploying, verify the destination and backup readiness privately:
+
+- PostgreSQL: take a consistent custom-format `pg_dump` using a suitably matched
+  PostgreSQL client and secure libpq credentials (never put credentials in chat,
+  source, or logs). Keep the dump outside the service filesystem. Inspect it with
+  `pg_restore --list` and restore into a separate disposable database to validate
+  it. Confirm Neon restore-history coverage in the actual project. Do not assume
+  a backup exists because Neon is configured.
+- SQLite: run `python backup_db.py /persistent/schedule.db /backups/schedule.db`.
+  The destination must be new. The helper includes committed WAL data and checks
+  integrity. Test restoration to a separate path; stop application writers before
+  switching `DATABASE_PATH` to a restored copy.
+- A production restore is a separate recovery decision. Never drop, reset, or
+  overwrite the live database merely to make deployment checks pass.
+
+Generated snapshots retain their original configuration, employees, availability,
+assignments, and fairness results. Reopening and exporting a snapshot uses those
+saved settings. Collection includes Saturday/Sunday; generation and exports use
+Monday-Friday only.
+
+### Regression checks
+
+```sh
+python -m unittest -v test_app
+npm install --no-save jsdom@30.1.0 exceljs@4.4.0
+node test_frontend.cjs
+```
+
+Node dependencies are for development only. The Excel regression runs ExcelJS's
+browser bundle in the page's JavaScript realm, serializes real XLSX bytes, and
+reopens them with the Node reader. Injecting the Node workbook constructor into
+JSDOM is invalid because ExcelJS checks arrays using `instanceof Array`.
+The disposable PostgreSQL check and its isolation requirements are documented in
+`test_postgres.py`; never point that test at a live database.

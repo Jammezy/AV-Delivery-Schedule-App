@@ -10,10 +10,11 @@
 import os
 import json
 import datetime
+from contextlib import contextmanager
 
 from peewee import (
     SqliteDatabase, Model, CharField, BooleanField, IntegerField,
-    TextField, DateTimeField,
+    TextField, DateTimeField, ForeignKeyField, PostgresqlDatabase,
 )
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
@@ -25,7 +26,7 @@ if DATABASE_URL:
     db = _connect(DATABASE_URL)
 else:
     db = SqliteDatabase(
-        os.environ.get("DB_PATH", "schedule.db"),
+        os.environ.get("DATABASE_PATH", os.environ.get("DB_PATH", "schedule.db")),
         pragmas={"journal_mode": "wal", "foreign_keys": 1, "busy_timeout": 5000},
     )
 
@@ -62,6 +63,53 @@ class Availability(BaseModel):
 
 class Config(BaseModel):
     data_json = TextField()
+
+
+class Folder(BaseModel):
+    name = CharField()
+    archived = BooleanField(default=False)
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+
+
+class SubmissionState(BaseModel):
+    active_folder = ForeignKeyField(Folder, null=True)
+    revision = IntegerField(default=0)
+
+
+class FolderAvailability(BaseModel):
+    employee = ForeignKeyField(Employee, on_delete="RESTRICT")
+    folder = ForeignKeyField(Folder, on_delete="RESTRICT")
+    data_json = TextField(default="{}")
+    comment = TextField(default="")
+    submitted_at = DateTimeField(default=datetime.datetime.utcnow)
+
+    class Meta:
+        indexes = ((('employee', 'folder'), True),)
+
+    def get_data(self):
+        return {k: normalize_level(v) for k, v in json.loads(self.data_json).items()
+                if normalize_level(v)}
+
+
+class SavedSchedule(BaseModel):
+    folder = ForeignKeyField(Folder, on_delete="RESTRICT")
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    snapshot_json = TextField()
+
+
+class AdminSession(BaseModel):
+    token_hash = CharField(unique=True)
+    expires_at = DateTimeField()
+
+
+@contextmanager
+def write_transaction():
+    # Serialize migration and folder/submission changes across server workers.
+    # PostgreSQL requires its own lock, not SQLite's BEGIN IMMEDIATE syntax.
+    with db.atomic("IMMEDIATE") if isinstance(db, SqliteDatabase) else db.atomic():
+        if isinstance(db, PostgresqlDatabase):
+            db.execute_sql("SELECT pg_advisory_xact_lock(9032401)")
+        yield
 
 
 def normalize_level(value):
@@ -163,9 +211,17 @@ def coerce_config(cfg):
 
 def init_db():
     db.connect(reuse_if_open=True)
-    db.create_tables([Employee, Availability, Config])
-    if Config.select().count() == 0:
-        Config.create(id=1, data_json=json.dumps(DEFAULT_CONFIG))
+    with write_transaction():
+        db.create_tables([Employee, Availability, Config, Folder, SubmissionState,
+                          FolderAvailability, SavedSchedule, AdminSession])
+        Config.get_or_create(id=1, defaults={"data_json": json.dumps(DEFAULT_CONFIG)})
+        if not SubmissionState.get_or_none(SubmissionState.id == 1):
+            imported = Folder.create(name="Imported availability")
+            for row in Availability.select():
+                employee, _ = Employee.get_or_create(name=row.employee_name)
+                FolderAvailability.create(employee=employee, folder=imported,
+                    data_json=row.data_json, submitted_at=row.submitted_at)
+            SubmissionState.create(id=1, active_folder=imported, revision=1)
     if not db.is_closed():
         db.close()
 
@@ -178,6 +234,8 @@ def get_config():
             cfg.update(json.loads(row.data_json))
         except (TypeError, ValueError):
             pass
+    cfg["days"] = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+    cfg["availabilityDays"] = cfg["days"] + ["Sat", "Sun"]
     return cfg
 
 

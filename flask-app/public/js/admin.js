@@ -15,15 +15,25 @@ function authHeaders() {
   return { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" };
 }
 async function apiGet(url) {
-  const res = await fetch(url, { headers: authHeaders() });
-  if (res.status === 401) { logout(); return null; }
-  return res.json();
+  const token = TOKEN, revision = VIEW_REVISION;
+  try {
+    const res = await fetch(url, {headers:authHeaders()});
+    const data = await res.json();
+    if (!TOKEN || TOKEN !== token || revision !== VIEW_REVISION) return null;
+    if (res.status === 401) { clearSession(); return null; }
+    if (!res.ok) { $("folderMsg").textContent = data.error || "Could not load data."; return null; }
+    return data;
+  } catch (_) { if (TOKEN === token) $("folderMsg").textContent = "Connection failed. Please retry."; return null; }
 }
 async function apiSend(url, method, body) {
-  const res = await fetch(url, { method, headers: authHeaders(), body: JSON.stringify(body || {}) });
-  if (res.status === 401) { logout(); return null; }
-  const data = await res.json().catch(() => ({}));
-  return { ok: res.ok, status: res.status, data };
+  const token = TOKEN, revision = VIEW_REVISION;
+  try {
+    const res = await fetch(url, {method, headers:authHeaders(), body:JSON.stringify(body || {})});
+    const data = await res.json().catch(() => ({}));
+    if (!TOKEN || TOKEN !== token || revision !== VIEW_REVISION) return null;
+    if (res.status === 401) { clearSession(); return null; }
+    return {ok:res.ok, status:res.status, data};
+  } catch (_) { return {ok:false, data:{error:"Connection failed. Please retry."}}; }
 }
 
 function escapeHtml(s) {
@@ -35,28 +45,39 @@ function hourLabel(h) {
   return `${hh}${h < 12 ? "AM" : "PM"}`;
 }
 function blockLabel(h) { return `${hourLabel(h)}–${hourLabel(h + 1)}`; }
-function hours() {
+function hours(cfg = CONFIG) {
   const out = [];
-  for (let h = CONFIG.hourStart; h <= CONFIG.hourEnd; h++) out.push(h);
+  for (let h = cfg.hourStart; h <= cfg.hourEnd; h++) out.push(h);
   return out;
 }
-function closeHourFor(day) {
-  const perDay = CONFIG.dayCloseHours || {};
+function closeHourFor(day, cfg = CONFIG) {
+  const perDay = cfg.dayCloseHours || {};
   if (perDay[day] !== undefined && perDay[day] !== null && perDay[day] !== "") return Number(perDay[day]);
-  if (day === "Fri" && CONFIG.fridayCloseHour != null) return Number(CONFIG.fridayCloseHour);
+  if (day === "Fri" && cfg.fridayCloseHour != null) return Number(cfg.fridayCloseHour);
   return null;
 }
-function isClosed(day, h) {
-  const ch = closeHourFor(day);
+function isClosed(day, h, cfg = CONFIG) {
+  const ch = closeHourFor(day, cfg);
   return ch !== null && h >= ch;
 }
 
 // ---------------- auth ----------------
-function logout() {
-  TOKEN = null;
+function clearSession() {
+  TOKEN = null; CONFIG = null; EMPLOYEES = []; LAST_DIAG = null;
+  FOLDERS = []; FOLDER_ID = ACTIVE_FOLDER = null; SELECTED.clear(); OVERVIEW = null;
+  PINNED = PREVIEWED = null; VIEW_REVISION++;
+  clearResult();
+  for (const id of ["employeeTableWrap","overviewArea","diagArea","settingsForm","savedSchedules","generatorSelection","folderSelect","folderStatus","folderMsg","diagBadge"]) $(id).innerHTML = "";
   sessionStorage.removeItem("adminToken");
-  $("loginCard").style.display = "block";
-  $("appArea").style.display = "none";
+  $("passwordInput").value = "";
+  $("loginCard").style.display = "block"; $("appArea").style.display = "none";
+}
+async function logout() {
+  try {
+    const res = await fetch("/api/admin/logout", {method:"POST", headers:authHeaders()});
+    if (!res.ok) throw new Error("logout");
+    clearSession();
+  } catch (_) { $("folderMsg").textContent = "Logout could not reach the server. Please retry."; }
 }
 
 async function login() {
@@ -70,6 +91,7 @@ async function login() {
     $("loginMsg").innerHTML = `<div class="msg err">${escapeHtml(data.error || "Login failed.")}</div>`;
     return;
   }
+  $("passwordInput").value = "";
   TOKEN = data.token;
   sessionStorage.setItem("adminToken", TOKEN);
   $("loginCard").style.display = "none";
@@ -92,7 +114,9 @@ function setupTabs() {
 
 // ---------------- employees ----------------
 async function renderEmployees() {
-  EMPLOYEES = (await apiGet("/api/employees")) || [];
+  const employees = await apiGet("/api/employees");
+  if (!employees) return;
+  EMPLOYEES = employees;
   const wrap = $("employeeTableWrap");
   if (!EMPLOYEES.length) {
     wrap.innerHTML = `<p class="hint">Nobody yet. Add someone above, or wait for the first submission.</p>`;
@@ -129,7 +153,8 @@ async function renderEmployees() {
     };
     tr.querySelector('[data-action="delete"]').onclick = async () => {
       if (!confirm(`Remove ${name} and their submitted availability?`)) return;
-      await apiSend(`/api/employees/${encodeURIComponent(name)}`, "DELETE");
+      const result = await apiSend(`/api/employees/${encodeURIComponent(name)}`, "DELETE");
+      if (!result?.ok) { if (result) alert(result.data.error); return; }
       renderEmployees();
       refreshDiagnostics();
     };
@@ -210,35 +235,7 @@ async function saveSettings() {
 }
 
 // ---------------- submissions ----------------
-async function renderOverview() {
-  const data = await apiGet("/api/availability");
-  if (!data) return;
-  const submitted = Object.keys(data.availability);
-  const rows = data.employees.map((e) => {
-    const av = data.availability[e.name];
-    if (!av) return `<tr><td class="left">${escapeHtml(e.name)}</td>
-      <td colspan="4" style="color:var(--red);">Nothing submitted</td></tr>`;
-    const vals = Object.values(av).map(Number);
-    const when = data.submittedAt[e.name]
-      ? new Date(data.submittedAt[e.name]).toLocaleDateString() : "—";
-    return `<tr>
-      <td class="left">${escapeHtml(e.name)}${e.isLead ? ' <span class="pill lead">lead</span>' : ""}</td>
-      <td>${vals.filter((v) => v >= 1).length}</td>
-      <td>${vals.filter((v) => v === 2).length}</td>
-      <td>${e.minHours}–${e.maxHours}</td>
-      <td>${when}</td></tr>`;
-  }).join("");
-
-  $("overviewArea").innerHTML = `
-    <p><strong>${submitted.length}</strong> of <strong>${data.employees.length}</strong>
-      submitted. ${data.missing.length
-        ? `Still waiting on: ${data.missing.map(escapeHtml).join(", ")}.`
-        : "Everyone's in."}</p>
-    <div class="scroll-x"><table class="data-table">
-      <thead><tr><th class="left">Name</th><th>Available hrs</th><th>Preferred hrs</th>
-        <th>Target</th><th>Submitted</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
-}
+async function renderOverview(reset = false) { await renderFolderOverview(reset); }
 
 // ---------------- diagnostics ----------------
 function heatTable(title, valueFor, classFor, legend) {
@@ -358,7 +355,7 @@ function renderDiagnostics(payload) {
 }
 
 async function refreshDiagnostics() {
-  const payload = await apiGet("/api/diagnostics");
+  const payload = await apiGet(`/api/diagnostics?${selectionQuery()}`);
   if (!payload) return;
   CONFIG = payload.config;
   renderDiagnostics(payload);
@@ -396,6 +393,7 @@ function fairnessTable(rows) {
 }
 
 async function generateSchedule() {
+  clearResult();
   const msg = $("generateMsg");
   msg.innerHTML = `<div class="msg info">Solving… this can take up to
     ${CONFIG.solverTimeLimit} seconds.</div>`;
@@ -404,7 +402,7 @@ async function generateSchedule() {
   $("regenerateBtn").disabled = true;
   await new Promise((r) => setTimeout(r, 30));
 
-  const r = await apiSend("/api/generate", "POST", { seed: Math.floor(Math.random() * 1e9) });
+  const r = await apiSend("/api/generate", "POST", { seed: Math.floor(Math.random() * 1e9), folderId:FOLDER_ID, employeeIds:[...SELECTED] });
   $("generateBtn").disabled = false;
   $("regenerateBtn").disabled = false;
   if (!r) return;
@@ -438,6 +436,7 @@ async function generateSchedule() {
     return;
   }
 
+  if (!["OPTIMAL","FEASIBLE"].includes(result.status)) { msg.textContent = result.message || "No valid schedule found. Try again."; return; }
   LAST_RESULT = result;
   const kind = result.status === "OPTIMAL" ? "Optimal" : "Valid";
   msg.innerHTML =
@@ -446,9 +445,10 @@ async function generateSchedule() {
     (result.note ? `<div class="msg warn">${escapeHtml(result.note)}</div>` : "");
 
   $("fairnessOutput").innerHTML = fairnessTable(result.fairness);
-  $("scheduleOutput").innerHTML = renderPrintableTable(result.schedule, CONFIG);
+  $("scheduleOutput").innerHTML = renderPrintableTable(result.schedule, result.config);
   $("regenerateBtn").style.display = "inline-block";
   $("downloadBtn").style.display = "inline-block";
+  await loadSavedSchedules();
 }
 
 function slotNamesFor(cfg) {
@@ -467,11 +467,11 @@ function renderPrintableTable(schedule, cfg) {
       slots.map((s) => `<th class="sub-header">${escapeHtml(s)}</th>`).join("");
   }
   let body = "";
-  for (const h of hours()) {
+  for (const h of hours(cfg)) {
     let row = "<tr>";
     for (const day of cfg.days) {
       row += `<td>${blockLabel(h)}</td>`;
-      const closed = isClosed(day, h);
+      const closed = isClosed(day, h, cfg);
       for (const slot of slots) {
         row += `<td>${closed ? "" : escapeHtml((schedule[day][h] || {})[slot] || "")}</td>`;
       }
@@ -486,7 +486,7 @@ function renderPrintableTable(schedule, cfg) {
 async function downloadExcel() {
   if (!LAST_RESULT) return;
   const { work, schedule, employees, fairness } = LAST_RESULT;
-  const cfg = CONFIG;
+  const cfg = LAST_RESULT.config;
   const slots = slotNamesFor(cfg);
   const wb = new ExcelJS.Workbook();
 
@@ -503,7 +503,7 @@ async function downloadExcel() {
   raw.addRow(["Time", ...employees.map((e) => e.name)]);
   raw.getRow(1).font = bold;
   for (const day of cfg.days) {
-    for (const h of hours()) {
+    for (const h of hours(cfg)) {
       raw.addRow([`${day} ${h}:00`,
         ...employees.map((e) => ((work[day][h] || []).includes(e.name) ? 1 : 0))]);
     }
@@ -524,10 +524,10 @@ async function downloadExcel() {
     });
   });
   let r = 3;
-  for (const h of hours()) {
+  for (const h of hours(cfg)) {
     cfg.days.forEach((day, dIdx) => {
       const c0 = dIdx * (slots.length + 1) + 1;
-      const closed = isClosed(day, h);
+      const closed = isClosed(day, h, cfg);
       const t = ws.getCell(r, c0);
       t.value = blockLabel(h); t.border = thin; t.alignment = center;
       slots.forEach((slot, i) => {
@@ -570,11 +570,13 @@ async function downloadExcel() {
 // ---------------- boot ----------------
 async function bootApp() {
   CONFIG = await fetch("/api/config").then((res) => res.json());
+  if (!TOKEN) return;
   renderSettings();
-  await refreshDiagnostics();
+  await loadFolders();
 }
 
 setupTabs();
+setupFolders();
 $("loginBtn").onclick = login;
 $("passwordInput").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
 $("saveSettingsBtn").onclick = saveSettings;

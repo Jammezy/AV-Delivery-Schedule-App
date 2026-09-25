@@ -13,6 +13,9 @@
 </header>
 
 <main>
+  <div class="card"><p id="submissionFolder" role="status">Loading submission folder…</p>
+    <button id="refreshFolderBtn" class="secondary">Refresh submission folder</button>
+    <p class="hint">Saturday and Sunday are saved for reference. The generator still schedules weekdays only.</p></div>
   <div class="card">
     <h2>Who are you?</h2>
     <input type="text" id="nameInput" list="rosterList" placeholder="First and last name"
@@ -58,7 +61,10 @@
     <div id="dayNotes"></div>
   </div>
 
-  <div id="msgArea"></div>
+  <div class="card"><label for="commentInput">Comments (optional)</label>
+    <textarea id="commentInput" rows="2" aria-describedby="commentCount"></textarea>
+    <p id="commentCount" role="status">0 / 99 characters</p></div>
+  <div id="msgArea" role="status"></div>
   <button id="submitBtn">Submit availability</button>
 </main>
 

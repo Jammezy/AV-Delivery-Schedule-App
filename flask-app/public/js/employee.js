@@ -7,6 +7,8 @@
 // ============================================================
 
 let CONFIG = null;
+let CONTEXT = null;
+let LOAD_REVISION = 0;
 let ROSTER = { names: [], allowSelfRegister: true };
 let EMPLOYEE = null;
 let state = {};
@@ -34,6 +36,7 @@ function blockLabel(h) {
 }
 
 function closeHourFor(day) {
+  if (day === "Sat" || day === "Sun") return null;
   const perDay = CONFIG.dayCloseHours || {};
   if (perDay[day] !== undefined && perDay[day] !== null && perDay[day] !== "") return Number(perDay[day]);
   if (day === "Fri" && CONFIG.fridayCloseHour != null) return Number(CONFIG.fridayCloseHour);
@@ -59,24 +62,24 @@ function escapeHtml(s) {
 // ---------------- grid ----------------
 function renderGrid() {
   const grid = $("grid");
-  grid.style.setProperty("--cols", CONFIG.days.length);
+  grid.style.setProperty("--cols", CONFIG.availabilityDays.length);
   const parts = ['<div class="wg-corner"></div>'];
 
-  for (const day of CONFIG.days) {
+  for (const day of CONFIG.availabilityDays) {
     parts.push(`<button type="button" class="wg-daylabel" data-fillday="${day}"
       title="Fill or clear ${day}">${escapeHtml(day)}</button>`);
   }
 
   for (const h of hours()) {
     parts.push(`<div class="wg-timelabel">${blockLabel(h)}</div>`);
-    for (const day of CONFIG.days) {
+    for (const day of CONFIG.availabilityDays) {
       const key = cellKey(day, h);
       const closed = isClosed(day, h);
       parts.push(
         `<button type="button" class="wg-cell" data-key="${key}" data-day="${day}"
            data-hour="${h}" data-level="${closed ? 0 : (state[key] || 0)}"
            ${closed ? 'data-closed="1" disabled' : ""}
-           aria-label="${day} ${blockLabel(h)}"></button>`
+           aria-pressed="${Boolean(state[key])}" aria-label="${day} ${blockLabel(h)}: ${state[key] === 2 ? "Preferred" : state[key] ? "Available" : "Unavailable"}"></button>`
       );
     }
   }
@@ -92,6 +95,8 @@ function paint(cell) {
   if (mode === 0) delete state[key];
   else state[key] = mode;
   cell.dataset.level = state[key] || 0;
+  cell.setAttribute("aria-pressed", String(Boolean(state[key])));
+  cell.setAttribute("aria-label", `${cell.dataset.day} ${blockLabel(Number(cell.dataset.hour))}: ${state[key] === 2 ? "Preferred" : state[key] ? "Available" : "Unavailable"}`);
   updateTally();
 }
 
@@ -117,6 +122,12 @@ function bindGrid() {
     if (el && el.classList && el.classList.contains("wg-cell")) paint(el);
   });
 
+  grid.addEventListener("click", e => {
+    if (e.detail !== 0) return; // Keyboard button activation.
+    const fill = e.target.closest("[data-fillday]");
+    if (fill) { toggleDay(fill.dataset.fillday); return; }
+    paintedThisDrag = new Set(); paint(e.target.closest(".wg-cell"));
+  });
   const stop = () => { painting = false; paintedThisDrag = new Set(); };
   grid.addEventListener("pointerup", stop);
   grid.addEventListener("pointercancel", stop);
@@ -155,6 +166,7 @@ function runsFor(day) {
 
 function updateTally() {
   const values = Object.values(state);
+  const weekdayHours = Object.entries(state).filter(([k,v]) => CONFIG.days.includes(k.split("_")[0]) && v > 0).length;
   const avail = values.filter((v) => v >= 1).length;
   const pref = values.filter((v) => v === 2).length;
   $("tallyAvail").textContent = avail;
@@ -162,9 +174,9 @@ function updateTally() {
 
   let target = "";
   if (EMPLOYEE && EMPLOYEE.minHours > 0) {
-    target = avail >= EMPLOYEE.minHours
+    target = weekdayHours >= EMPLOYEE.minHours
       ? `Your weekly minimum is ${EMPLOYEE.minHours} hrs — you're covered.`
-      : `Your weekly minimum is ${EMPLOYEE.minHours} hrs. Mark at least ${EMPLOYEE.minHours - avail} more.`;
+      : `Your weekly minimum is ${EMPLOYEE.minHours} hrs. Mark at least ${EMPLOYEE.minHours - weekdayHours} more.`;
   }
   $("tallyTarget").textContent = target;
 
@@ -200,14 +212,22 @@ async function loadRoster() {
 async function loadPrevious(quiet) {
   const name = $("nameInput").value.trim();
   if (!name) { if (!quiet) showMsg("Type your name first.", "err"); return; }
-  const data = await fetch(`/api/availability/${encodeURIComponent(name)}`).then((r) => r.json());
+  if (!CONTEXT?.folder) return;
+  const revision = ++LOAD_REVISION;
+  const folderId = CONTEXT.folder.id;
+  const res = await fetch(`/api/availability/${encodeURIComponent(name)}?folderId=${folderId}`);
+  const data = await res.json();
+  if (revision !== LOAD_REVISION || folderId !== CONTEXT?.folder?.id || name !== $("nameInput").value.trim()) return;
+  if (!res.ok) { showMsg(escapeHtml(data.error || "Could not load submission."), "err"); return; }
   EMPLOYEE = data.employee || null;
   if (!data.found) {
+    state = {}; $("commentInput").value = ""; updateCommentCount(); renderGrid();
     if (!quiet) showMsg("No previous submission under that name — start fresh below.", "info");
     updateTally();
     return;
   }
   state = {};
+  $("commentInput").value = data.comment || ""; updateCommentCount();
   for (const [k, v] of Object.entries(data.availability || {})) state[k] = Number(v);
   renderGrid();
   const when = data.submittedAt ? new Date(data.submittedAt).toLocaleString() : "earlier";
@@ -218,14 +238,15 @@ async function submitAvailability() {
   const name = $("nameInput").value.trim();
   if (!name) return showMsg("Enter your name before submitting.", "err");
   const avail = Object.values(state).filter((v) => v >= 1).length;
-  if (!avail) return showMsg("Mark at least a few hours before submitting.", "err");
+  if (!CONTEXT?.folder) return showMsg("No folder is accepting submissions.", "err");
+  if ([...$("commentInput").value].length > 99) return showMsg("Comments must be shorter than 100 characters.", "err");
 
   $("submitBtn").disabled = true;
   try {
     const res = await fetch("/api/availability", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, availability: state }),
+      body: JSON.stringify({ name, availability: state, comment:$("commentInput").value, folderId:CONTEXT.folder.id, revision:CONTEXT.revision }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) return showMsg(escapeHtml(data.error || "That didn't save. Try again."), "err");
@@ -239,14 +260,31 @@ async function submitAvailability() {
     }
     showMsg(`Saved — ${data.availableHours} available, ${data.preferredHours} preferred.${escapeHtml(extra)}`,
       data.shortOfMinimum > 0 ? "warn" : "ok");
+  } catch (_) { showMsg("Could not save. Your entries are still here; please retry.", "err");
   } finally {
-    $("submitBtn").disabled = false;
+    $("submitBtn").disabled = !CONTEXT?.folder;
   }
+}
+
+function updateCommentCount() { $("commentCount").textContent = `${[...$("commentInput").value].length} / 99 characters`; }
+async function refreshContext() {
+  const res = await fetch("/api/submission-context");
+  if (!res.ok) throw new Error("Could not load submission folder.");
+  const next = await res.json();
+  if (CONTEXT && (next.revision !== CONTEXT.revision || next.folder?.id !== CONTEXT.folder?.id) &&
+      !confirm(`The submission destination is now ${next.folder?.name || "closed"}. Keep your entered availability and use this destination?`)) return;
+  CONTEXT = next; CONFIG = next.config; LOAD_REVISION++;
+  $("submissionFolder").textContent = next.folder ? `Submitting to: ${next.folder.name}` : "No folder is accepting submissions.";
+  $("submitBtn").disabled = !next.folder;
+  renderGrid();
 }
 
 // ---------------- boot ----------------
 (async function init() {
-  CONFIG = await fetch("/api/config").then((r) => r.json());
+  $("submitBtn").disabled = true;
+  $("commentInput").oninput = updateCommentCount;
+  $("refreshFolderBtn").onclick = () => refreshContext().catch(() => showMsg("Could not refresh the folder. Please retry.", "err"));
+  await refreshContext();
   await loadRoster();
   renderGrid();
   bindGrid();
@@ -262,7 +300,7 @@ async function submitAvailability() {
     }
   };
   $("copyMonBtn").onclick = () => {
-    const [first, ...rest] = CONFIG.days;
+    const [first, ...rest] = CONFIG.availabilityDays;
     for (const day of rest) {
       for (const h of hours()) {
         const key = cellKey(day, h);

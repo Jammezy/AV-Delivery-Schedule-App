@@ -7,14 +7,17 @@ import re
 import json
 import secrets
 import datetime
+import hashlib
 from functools import wraps
 from collections import defaultdict
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, abort
+from peewee import DatabaseError
 
 from models import (
     db, init_db, Employee, Availability, get_config, save_config,
-    normalize_level,
+    normalize_level, Folder, SubmissionState, FolderAvailability,
+    SavedSchedule, AdminSession, write_transaction,
 )
 import solver as solver_module
 
@@ -30,12 +33,12 @@ MAX_LOGIN_ATTEMPTS = 10
 LOGIN_WINDOW = datetime.timedelta(minutes=10)
 KEY_PATTERN = re.compile(r"^[A-Za-z]{2,4}_\d{2}$")
 
-_tokens = {}
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
 _login_attempts = defaultdict(list)
 
 
 def now():
-    return datetime.datetime.now(datetime.timezone.utc)
+    return datetime.datetime.utcnow()
 
 
 def clean_name(raw):
@@ -72,20 +75,22 @@ def _close_db(_exc):
         db.close()
 
 
+def token_hash():
+    auth = request.headers.get("Authorization", "")
+    token = auth[7:] if auth.startswith("Bearer ") else ""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
 def require_admin(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        auth = request.headers.get("Authorization", "")
-        token = auth[7:] if auth.startswith("Bearer ") else None
-        expiry = _tokens.get(token)
-        if not expiry or expiry < now():
-            _tokens.pop(token, None)
-            return jsonify({"error": "Your session expired. Log in again."}), 401
+        session = AdminSession.get_or_none(AdminSession.token_hash == token_hash())
+        if not session or session.expires_at <= datetime.datetime.utcnow():
+            return jsonify(error="Not authenticated. Please log in again."), 401
         return fn(*args, **kwargs)
     return wrapper
 
 
-# ---------------- auth ----------------
 @app.post("/api/admin/login")
 def login():
     ip = request.headers.get("X-Forwarded-For", request.remote_addr or "?").split(",")[0]
@@ -99,12 +104,60 @@ def login():
         _login_attempts[ip].append(now())
         return jsonify({"error": "Incorrect password"}), 401
 
-    for tok, exp in list(_tokens.items()):
-        if exp < now():
-            _tokens.pop(tok, None)
+    AdminSession.delete().where(AdminSession.expires_at <= now()).execute()
     token = secrets.token_hex(24)
-    _tokens[token] = now() + TOKEN_TTL
+    AdminSession.create(token_hash=hashlib.sha256(token.encode()).hexdigest(), expires_at=now() + TOKEN_TTL)
     return jsonify({"token": token})
+
+
+@app.post("/api/admin/logout")
+def logout():
+    AdminSession.delete().where(AdminSession.token_hash == token_hash()).execute()
+    return jsonify(ok=True)
+
+
+@app.after_request
+def no_cache(response):
+    if request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.errorhandler(DatabaseError)
+def database_error(error):
+    app.logger.exception("Database operation failed")
+    return jsonify(error="Unable to save or load data. Your entries have not been cleared; please retry."), 503
+
+
+@app.errorhandler(400)
+@app.errorhandler(404)
+@app.errorhandler(409)
+def request_error(error):
+    return jsonify(error=error.description), error.code
+
+
+def body():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        abort(400, "A JSON object is required.")
+    return data
+
+
+def folder_or_404(folder_id):
+    folder = Folder.get_or_none(Folder.id == folder_id)
+    if not folder:
+        abort(404, "Folder not found.")
+    return folder
+
+
+def folder_json(f):
+    return {"id": f.id, "name": f.name, "archived": f.archived}
+
+
+def submission_json(row):
+    return {"employeeId": row.employee_id, "availability": row.get_data(),
+            "comment": row.comment, "submittedAt": row.submitted_at.isoformat() + "Z"}
+
 
 
 # ---------------- config ----------------
@@ -116,7 +169,10 @@ def get_config_route():
 @app.put("/api/config")
 @require_admin
 def put_config():
-    updated, errors = save_config(request.get_json(silent=True) or {})
+    data = body()
+    data["days"] = ["Mon", "Tue", "Wed", "Thu", "Fri"]
+    data.pop("availabilityDays", None)
+    updated, errors = save_config(data)
     if errors:
         return jsonify({"errors": errors, "config": updated}), 400
     return jsonify(updated)
@@ -124,7 +180,7 @@ def put_config():
 
 # ---------------- employees ----------------
 def serialize(e):
-    return {"name": e.name, "isLead": e.is_lead,
+    return {"id": e.id, "name": e.name, "isLead": e.is_lead,
             "minHours": e.min_hours, "maxHours": e.max_hours}
 
 
@@ -166,114 +222,159 @@ def upsert_employee(name):
 @require_admin
 def delete_employee(name):
     name = resolve_name(name)
-    with db.atomic():
+    employee = Employee.get_or_none(Employee.name == name)
+    if employee and FolderAvailability.select().where(FolderAvailability.employee == employee).exists():
+        abort(409, "This employee has saved submissions. Exclude them from generation to keep their history.")
+    with write_transaction():
         Employee.delete().where(Employee.name == name).execute()
         Availability.delete().where(Availability.employee_name == name).execute()
     return jsonify({"ok": True})
 
 
-# ---------------- availability ----------------
+@app.get("/api/submission-context")
+def submission_context():
+    state = SubmissionState.get_by_id(1)
+    return jsonify(folder=folder_json(state.active_folder) if state.active_folder_id else None,
+                   revision=state.revision, config=get_config())
+
+
+@app.get("/api/folders")
+@require_admin
+def folders():
+    state = SubmissionState.get_by_id(1)
+    return jsonify(folders=[folder_json(f) for f in Folder.select().order_by(Folder.id.desc())],
+                   activeFolderId=state.active_folder_id)
+
+
+@app.post("/api/folders")
+@require_admin
+def create_folder():
+    data = body()
+    name = data.get("name")
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
+        abort(400, "Enter a folder name of 1–100 characters.")
+    with write_transaction():
+        folder = Folder.create(name=name.strip())
+        if data.get("activate") is True:
+            SubmissionState.update(active_folder=folder, revision=SubmissionState.revision + 1).where(SubmissionState.id == 1).execute()
+    return jsonify(folder_json(folder)), 201
+
+
+@app.patch("/api/folders/<int:folder_id>")
+@require_admin
+def edit_folder(folder_id):
+    data = body()
+    with write_transaction():
+        folder = folder_or_404(folder_id)
+        state = SubmissionState.get_by_id(1)
+        if "name" in data:
+            if not isinstance(data["name"], str) or not 1 <= len(data["name"].strip()) <= 100:
+                abort(400, "Enter a folder name of 1–100 characters.")
+            folder.name = data["name"].strip()
+        if "archived" in data:
+            if type(data["archived"]) is not bool:
+                abort(400, "Invalid archive value.")
+            folder.archived = data["archived"]
+        if data.get("activate") is True:
+            if folder.archived:
+                abort(409, "Restore this folder before accepting submissions.")
+            state.active_folder = folder
+            state.revision += 1
+        elif state.active_folder_id == folder.id and (folder.archived or data.get("activate") is False):
+            state.active_folder = None
+            state.revision += 1
+        elif state.active_folder_id == folder.id and "name" in data:
+            state.revision += 1
+        folder.save()
+        state.save()
+    return jsonify(folder_json(folder))
+
+
 @app.post("/api/availability")
 def submit_availability():
-    data = request.get_json(silent=True) or {}
-    name = resolve_name(data.get("name"))
-    if not name:
-        return jsonify({"error": "Enter your name before submitting."}), 400
-
-    cfg = get_config()
-    existing = Employee.get_or_none(Employee.name == name)
-    if existing is None:
-        if not cfg.get("allowSelfRegister", True):
-            return jsonify({
-                "error": "That name isn't on the roster. Pick your name from the list, "
-                         "or ask your supervisor to add you."
-            }), 400
-        Employee.create(name=name, is_lead=False, min_hours=0, max_hours=40)
-
-    raw = data.get("availability") or {}
-    if not isinstance(raw, dict) or len(raw) > 2000:
-        return jsonify({"error": "That submission didn't look right. Reload and try again."}), 400
-
-    cleaned = {}
-    valid_days = set(cfg["days"])
-    for key, value in raw.items():
-        if not isinstance(key, str) or not KEY_PATTERN.match(key):
-            continue
-        day, _, hour = key.partition("_")
-        if day not in valid_days:
-            continue
-        if not cfg["hourStart"] <= int(hour) <= cfg["hourEnd"]:
-            continue
-        lvl = normalize_level(value)
-        if lvl:
-            cleaned[key] = lvl
-
-    if not cleaned:
-        return jsonify({"error": "You haven't marked any hours yet."}), 400
-
-    row, _ = Availability.get_or_create(employee_name=name, defaults={"data_json": "{}"})
-    row.data_json = json.dumps(cleaned)
-    row.submitted_at = now()
-    row.save()
-
-    emp = Employee.get(Employee.name == name)
-    available = len(cleaned)
-    preferred = sum(1 for v in cleaned.values() if v == 2)
-    return jsonify({
-        "ok": True, "name": name,
-        "availableHours": available, "preferredHours": preferred,
-        "minHours": emp.min_hours, "maxHours": emp.max_hours,
-        "shortOfMinimum": max(0, emp.min_hours - available),
-    })
+    data = body()
+    name, comment, availability = data.get("name"), data.get("comment", ""), data.get("availability")
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
+        abort(400, "Enter a name of 1–100 characters.")
+    if not isinstance(comment, str) or len(comment) > 99:
+        abort(400, "Comments must be shorter than 100 characters.")
+    if not isinstance(availability, dict):
+        abort(400, "Availability must be an object.")
+    with write_transaction():
+        state = SubmissionState.get_by_id(1)
+        if not state.active_folder_id:
+            abort(409, "No folder is accepting submissions.")
+        if data.get("folderId") != state.active_folder_id or data.get("revision") != state.revision:
+            abort(409, "The submission folder changed. Refresh the form and confirm the current folder before submitting.")
+        cfg = get_config()
+        valid = {f"{d}_{h:02d}" for d in cfg['availabilityDays'] for h in range(cfg["hourStart"], cfg["hourEnd"] + 1)}
+        if any(k not in valid or (type(v) not in (int, bool) or v not in (0, 1, 2)) for k, v in availability.items()):
+            abort(400, "Invalid availability time slot. Refresh the form and try again.")
+        name = resolve_name(name)
+        employee = Employee.get_or_none(Employee.name == name)
+        if employee is None:
+            if not cfg.get("allowSelfRegister", True):
+                abort(400, "That name is not on the roster. Ask your supervisor to add you.")
+            employee = Employee.create(name=name)
+        row, _ = FolderAvailability.get_or_create(employee=employee, folder=state.active_folder_id)
+        row.data_json = json.dumps(availability)
+        row.comment = comment
+        row.submitted_at = datetime.datetime.utcnow()
+        row.save()
+    available = sum(normalize_level(v) > 0 for v in availability.values())
+    weekday_hours = sum(normalize_level(v) > 0 for k, v in availability.items() if k.split("_")[0] in cfg["days"])
+    return jsonify(ok=True, name=name, submittedAt=row.submitted_at.isoformat() + "Z",
+        availableHours=available, preferredHours=sum(normalize_level(v) == 2 for v in availability.values()),
+        minHours=employee.min_hours, maxHours=employee.max_hours,
+        shortOfMinimum=max(0, employee.min_hours - weekday_hours))
 
 
 @app.get("/api/availability/<path:name>")
 def get_one_availability(name):
-    name = resolve_name(name)
-    row = Availability.get_or_none(Availability.employee_name == name)
-    emp = Employee.get_or_none(Employee.name == name)
-    if not row:
-        return jsonify({"found": False,
-                        "employee": serialize(emp) if emp else None})
-    return jsonify({
-        "found": True,
-        "availability": row.get_data(),
-        "submittedAt": row.submitted_at.isoformat() if row.submitted_at else None,
-        "employee": serialize(emp) if emp else None,
-    })
+    # Name-based access is legacy behavior, NOT employee authentication.
+    state = SubmissionState.get_by_id(1)
+    if not state.active_folder_id or request.args.get("folderId", type=int) != state.active_folder_id:
+        abort(409, "The submission folder changed. Refresh and confirm the current folder.")
+    employee = Employee.get_or_none(Employee.name == resolve_name(name))
+    row = FolderAvailability.get_or_none((FolderAvailability.employee == employee.id) &
+          (FolderAvailability.folder == state.active_folder_id)) if employee else None
+    result = submission_json(row) if row else {}
+    result.update(found=row is not None, employee=serialize(employee) if employee else None)
+    return jsonify(result)
+
 
 
 @app.get("/api/availability")
 @require_admin
 def get_all_availability():
+    folder = folder_or_404(request.args.get("folderId", type=int))
     employees = [serialize(e) for e in Employee.select().order_by(Employee.name)]
-    rows = {r.employee_name: r for r in Availability.select()}
-    availability = {}
-    submitted_at = {}
-    for nm, row in rows.items():
-        availability[nm] = row.get_data()
-        submitted_at[nm] = row.submitted_at.isoformat() if row.submitted_at else None
-    return jsonify({
-        "employees": employees,
-        "availability": availability,
-        "submittedAt": submitted_at,
-        "missing": [e["name"] for e in employees if e["name"] not in availability],
-    })
-
+    rows = list(FolderAvailability.select().where(FolderAvailability.folder == folder))
+    availability = {r.employee.name: r.get_data() for r in rows}
+    return jsonify(folder=folder_json(folder), employees=employees, availability=availability,
+        submittedAt={r.employee.name: r.submitted_at.isoformat() + "Z" for r in rows},
+        comments={r.employee.name: r.comment for r in rows},
+        submissions=[submission_json(r) for r in rows],
+        missing=[e["name"] for e in employees if e["name"] not in availability])
 
 # ---------------- diagnostics ----------------
-def _load_inputs():
+def _load_inputs(folder_id, ids=None):
+    folder_or_404(folder_id)
     cfg = get_config()
-    employees = [serialize(e) for e in Employee.select().order_by(Employee.name)]
-    availability = {r.employee_name: r.get_data() for r in Availability.select()}
-    return cfg, employees, availability
-
+    rows = FolderAvailability.select().where(FolderAvailability.folder == folder_id)
+    if ids is not None:
+        rows = rows.where(FolderAvailability.employee.in_(ids))
+    rows = list(rows)
+    if ids is not None and {r.employee_id for r in rows} != set(ids):
+        abort(400, "Every selected employee must have a submission in this folder.")
+    return cfg, [serialize(r.employee) for r in rows], {r.employee.name: r.get_data() for r in rows}, rows
 
 @app.get("/api/diagnostics")
 @require_admin
 def diagnostics():
     """Everything blocking or squeezing this week, without running the solver."""
-    cfg, employees, availability = _load_inputs()
+    ids = request.args.getlist("employeeId", type=int) if "selection" in request.args else None
+    cfg, employees, availability, _ = _load_inputs(request.args.get("folderId", type=int), ids)
     return jsonify({
         "config": cfg,
         "diagnostics": solver_module.analyze(employees, availability, cfg),
@@ -290,17 +391,53 @@ def diagnostics():
 @app.post("/api/generate")
 @require_admin
 def generate():
-    cfg, employees, availability = _load_inputs()
-    if not employees:
-        return jsonify({"error": "Nobody has submitted availability yet."}), 400
-
-    body = request.get_json(silent=True) or {}
-    result = solver_module.generate_schedule(
-        employees, availability, cfg, seed=body.get("seed")
-    )
-    result["employees"] = employees
-    result["config"] = cfg
+    data = body()
+    ids = data.get("employeeIds")
+    if not isinstance(ids, list) or not ids or any(type(i) is not int for i in ids) or len(ids) != len(set(ids)):
+        abort(400, "Select at least one employee with submitted availability.")
+    with write_transaction():
+        folder = folder_or_404(data.get("folderId"))
+        rows = list(FolderAvailability.select().where((FolderAvailability.folder == folder) & (FolderAvailability.employee.in_(ids))))
+        if {r.employee_id for r in rows} != set(ids):
+            abort(400, "Every selected employee must have a submission in this folder.")
+        roster = [serialize(r.employee) for r in rows]
+        availability = {r.employee.name: r.get_data() for r in rows}
+        cfg = get_config()
+        submissions = [submission_json(r) for r in rows]
+    seed = data.get("seed")
+    if seed is not None and (type(seed) is not int or not 0 <= seed < 2**31):
+        abort(400, "Invalid generation seed.")
+    result = solver_module.generate_schedule(roster, availability, cfg, seed=seed)
+    if result["status"] not in ("OPTIMAL", "FEASIBLE"):
+        return jsonify(result)
+    result.update(employees=roster, config=cfg)
+    snapshot = {"result": result, "submissions": submissions, "employeeIds": ids,
+                "folder": folder_json(folder)}
+    saved = SavedSchedule.create(folder=folder, snapshot_json=json.dumps(snapshot))
+    result["savedScheduleId"] = saved.id
     return jsonify(result)
+
+
+@app.get("/api/folders/<int:folder_id>/schedules")
+@require_admin
+def schedules(folder_id):
+    folder_or_404(folder_id)
+    return jsonify([{"id": s.id, "createdAt": s.created_at.isoformat() + "Z"} for s in
+                    SavedSchedule.select().where(SavedSchedule.folder == folder_id).order_by(SavedSchedule.id.desc())])
+
+
+@app.route("/api/folders/<int:folder_id>/schedules/<int:schedule_id>", methods=["GET", "DELETE"])
+@require_admin
+def saved_schedule(folder_id, schedule_id):
+    saved = SavedSchedule.get_or_none((SavedSchedule.id == schedule_id) & (SavedSchedule.folder == folder_id))
+    if not saved:
+        abort(404, "Saved schedule not found.")
+    if request.method == "DELETE":
+        if body().get("confirm") is not True:
+            abort(400, "Confirm deletion of this saved schedule.")
+        saved.delete_instance()
+        return jsonify(ok=True)
+    return jsonify(json.loads(saved.snapshot_json))
 
 
 # ---------------- static frontend ----------------

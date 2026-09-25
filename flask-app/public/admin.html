@@ -22,6 +22,19 @@
   </div>
 
   <div id="appArea" style="display:none;">
+    <div class="card">
+      <div class="row"><label for="folderSelect">Viewing folder</label><select id="folderSelect"></select>
+        <button id="logoutBtn" class="secondary">Log out</button></div>
+      <p id="folderStatus" role="status"></p>
+      <div class="row"><input id="newFolderName" aria-label="New folder name" placeholder="Fall 2026" maxlength="100">
+        <label><input id="activateNewFolder" type="checkbox"> Accept submissions here</label>
+        <button id="createFolderBtn">Create folder</button></div>
+      <div class="row"><button id="renameFolderBtn" class="secondary">Rename</button>
+        <button id="activateFolderBtn" class="secondary">Accept submissions here</button>
+        <button id="stopFolderBtn" class="secondary">Stop accepting submissions</button>
+        <button id="archiveFolderBtn" class="secondary">Archive / restore</button></div>
+      <p id="folderMsg" role="status"></p>
+    </div>
     <div class="tabs">
       <button data-tab="diagnostics" class="active">Week check<span id="diagBadge"></span></button>
       <button data-tab="generate">Generate</button>
@@ -44,13 +57,15 @@
     <section id="tab-generate" class="card" style="display:none;">
       <h2>Generate the schedule</h2>
       <p class="hint">Runs the OR-Tools solver on the server against everyone's current
-        submissions. It finds a schedule that satisfies every rule and balances preferred
+        submissions selected below, in the viewed folder. It finds a schedule that satisfies every rule and balances preferred
         hours as evenly as it can, or tells you exactly which rule is in the way.</p>
       <div class="row">
         <button id="generateBtn">Generate schedule</button>
         <button id="regenerateBtn" class="secondary" style="display:none;">Try a different one</button>
         <button id="downloadBtn" class="secondary" style="display:none;">Download .xlsx</button>
       </div>
+      <div id="generatorSelection"></div>
+      <h3>Saved schedules</h3><div id="savedSchedules"></div>
       <div id="generateMsg"></div>
       <div id="fairnessOutput"></div>
       <div id="scheduleOutput" style="margin-top:16px;"></div>
@@ -81,6 +96,7 @@
   </div>
 </main>
 
+<script src="js/folders.js"></script>
 <script src="js/admin.js"></script>
 </body>
 </html>
