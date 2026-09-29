@@ -17,9 +17,10 @@ from peewee import DatabaseError
 from models import (
     db, init_db, Employee, Availability, get_config, save_config,
     normalize_level, Folder, SubmissionState, FolderAvailability,
-    SavedSchedule, AdminSession, write_transaction,
+    SavedSchedule, SavedWeekendSchedule, AdminSession, write_transaction,
 )
 import solver as solver_module
+import weekend_generator
 
 app = Flask(__name__, static_folder="public", static_url_path="")
 
@@ -388,6 +389,74 @@ def diagnostics():
 
 
 # ---------------- schedule generation ----------------
+@app.post("/api/generate_weekend")
+@require_admin
+def generate_weekend():
+    data = body()
+    config = data.get("config")
+
+    if not config or "start_date" not in config or "end_date" not in config:
+        abort(400, "Missing required weekend configuration.")
+
+    with write_transaction():
+        folder = folder_or_404(data.get("folderId"))
+
+        # We fetch all employees for this folder.
+        rows = list(FolderAvailability.select().where(FolderAvailability.folder == folder))
+
+        roster = [serialize(r.employee) for r in rows]
+        availability = {r.employee.name: r.get_data() for r in rows}
+
+    result = weekend_generator.generate_weekend_schedule(config, availability, roster)
+
+    # Send it back
+    return jsonify({
+        "status": "SUCCESS",
+        "assignments": result["assignments"],
+        "effective_pool": result["effective_pool"],
+        "rotating_counts": result["rotating_counts"],
+        "employees": roster,
+        "config": config,
+        "folderId": folder.id
+    })
+
+
+@app.post("/api/save_weekend")
+@require_admin
+def save_weekend():
+    data = body()
+    folder_id = data.get("folderId")
+    snapshot = data.get("snapshot")
+    if not snapshot or not folder_id:
+        abort(400, "Missing snapshot or folder.")
+    with write_transaction():
+        folder = folder_or_404(folder_id)
+        saved = SavedWeekendSchedule.create(folder=folder, snapshot_json=json.dumps(snapshot))
+        return jsonify({"savedScheduleId": saved.id})
+
+
+@app.get("/api/folders/<int:folder_id>/weekend_schedules")
+@require_admin
+def weekend_schedules(folder_id):
+    folder_or_404(folder_id)
+    return jsonify([{"id": s.id, "createdAt": s.created_at.isoformat() + "Z"} for s in
+                    SavedWeekendSchedule.select().where(SavedWeekendSchedule.folder == folder_id).order_by(SavedWeekendSchedule.id.desc())])
+
+
+@app.route("/api/folders/<int:folder_id>/weekend_schedules/<int:schedule_id>", methods=["GET", "DELETE"])
+@require_admin
+def saved_weekend_schedule(folder_id, schedule_id):
+    saved = SavedWeekendSchedule.get_or_none((SavedWeekendSchedule.id == schedule_id) & (SavedWeekendSchedule.folder == folder_id))
+    if not saved:
+        abort(404, "Saved schedule not found.")
+    if request.method == "DELETE":
+        if body().get("confirm") is not True:
+            abort(400, "Confirm deletion of this saved schedule.")
+        saved.delete_instance()
+        return jsonify(ok=True)
+    return jsonify(json.loads(saved.snapshot_json))
+
+
 @app.post("/api/generate")
 @require_admin
 def generate():
