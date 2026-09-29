@@ -97,6 +97,12 @@ class SavedSchedule(BaseModel):
     snapshot_json = TextField()
 
 
+class SavedWeekendSchedule(BaseModel):
+    folder = ForeignKeyField(Folder, on_delete="RESTRICT")
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    snapshot_json = TextField()
+
+
 class AdminSession(BaseModel):
     token_hash = CharField(unique=True)
     expires_at = DateTimeField()
@@ -213,7 +219,7 @@ def init_db():
     db.connect(reuse_if_open=True)
     with write_transaction():
         db.create_tables([Employee, Availability, Config, Folder, SubmissionState,
-                          FolderAvailability, SavedSchedule, AdminSession])
+                          FolderAvailability, SavedSchedule, SavedWeekendSchedule, AdminSession])
         Config.get_or_create(id=1, defaults={"data_json": json.dumps(DEFAULT_CONFIG)})
         if not SubmissionState.get_or_none(SubmissionState.id == 1):
             imported = Folder.create(name="Imported availability")

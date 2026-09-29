@@ -40,6 +40,7 @@
     <div class="tabs">
       <button data-tab="diagnostics" class="active">Week check<span id="diagBadge"></span></button>
       <button data-tab="generate">Generate</button>
+      <button data-tab="weekend">Weekend</button>
       <button data-tab="employees">Employees</button>
       <button data-tab="overview">Submissions</button>
       <button data-tab="settings">Settings</button>
@@ -71,6 +72,67 @@
       <div id="generateMsg"></div>
       <div id="fairnessOutput"></div>
       <div id="scheduleOutput" style="margin-top:16px;"></div>
+    </section>
+
+
+    <section id="tab-weekend" class="card" style="display:none;">
+      <h2>Weekend schedule generator</h2>
+      <p class="hint">Generate all weekend assignments for an entire semester in one operation.</p>
+
+      <div class="row" style="margin-bottom:12px;">
+        <label>Start date: <input type="date" id="wkndStart"></label>
+        <label>End date: <input type="date" id="wkndEnd"></label>
+      </div>
+
+      <div style="margin-bottom:12px;">
+        <h3>Excluded dates</h3>
+        <p class="hint">These dates receive no assignments, including fixed assignments.</p>
+        <div id="wkndExcludedList"></div>
+        <div class="row">
+          <input type="date" id="newExclDate">
+          <input type="text" id="newExclLabel" placeholder="Holiday label (optional)">
+          <button id="addExclBtn" class="secondary">Add excluded date</button>
+        </div>
+      </div>
+
+      <div style="margin-bottom:12px;">
+        <h3>Fixed assignments</h3>
+        <p class="hint">Select an employee for a recurring shift, or leave open for rotation.</p>
+        <table class="data-table" id="wkndFixedTable">
+          <thead><tr><th>Shift</th><th>Day</th><th>Time</th><th>Employee</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div style="margin-bottom:12px;">
+        <h3>Rotating pool</h3>
+        <p class="hint">Select the rotating employees and arrange an explicit starting order.</p>
+        <div class="row">
+          <label>
+            <input type="checkbox" id="wkndShiftPerson" checked>
+            Shift starting person each round
+          </label>
+          <button class="secondary help-btn" id="wkndHelpBtn" aria-label="Help: Shift starting person" aria-expanded="false" style="border-radius:50%; padding:0 8px;">?</button>
+        </div>
+        <div id="wkndHelpPopup" class="card" style="display:none; position:absolute; z-index:100; max-width:400px; box-shadow:0 4px 12px rgba(0,0,0,0.15);">
+          <p>After each round of assignments, start the next round with the next employee in your original order. For example: 1, 2, 3, 4; then 2, 3, 4, 1; then 3, 4, 1, 2. Turn this off to repeat the same order each round. Availability and the one-shift-per-weekend limit may change who can take a particular shift. Employees skipped for availability keep priority for a compatible opening. This changes assignment order; it does not guarantee a different shift each time.</p>
+          <button class="secondary" id="wkndHelpClose">Close</button>
+        </div>
+        <table class="data-table" id="wkndRotatingTable">
+          <thead><tr><th>Order</th><th>Employee</th><th>Actions</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="row">
+        <button id="wkndGenerateBtn">Generate preview</button>
+      </div>
+
+      <div id="wkndMsg"></div>
+      <div id="wkndPreviewArea" style="margin-top:16px;"></div>
+
+      <h3>Saved weekend schedules</h3>
+      <div id="wkndSavedSchedules"></div>
     </section>
 
     <section id="tab-employees" class="card" style="display:none;">

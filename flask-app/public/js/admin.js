@@ -108,6 +108,7 @@ function setupTabs() {
       $(`tab-${btn.dataset.tab}`).style.display = "block";
       if (btn.dataset.tab === "employees") renderEmployees();
       if (btn.dataset.tab === "overview") renderOverview();
+      if (btn.dataset.tab === "weekend") renderWeekendUI();
     };
   });
 }
@@ -599,3 +600,229 @@ if (TOKEN) {
   $("appArea").style.display = "block";
   bootApp();
 }
+
+
+// --- Weekend Generator ---
+let WKND_EXCLUDED = [];
+let WKND_ROTATING_ORDER = [];
+let WKND_FIXED = {};
+let LAST_WKND_PREVIEW = null;
+
+const WKND_SHIFTS = [
+  {key: "friday_evening", day: "Friday", time: "19:00-22:00"},
+  {key: "saturday_morning", day: "Saturday", time: "07:00-12:00"},
+  {key: "saturday_afternoon", day: "Saturday", time: "12:00-17:00"},
+  {key: "saturday_evening", day: "Saturday", time: "17:00-22:00"},
+  {key: "sunday_morning", day: "Sunday", time: "07:00-12:00"},
+  {key: "sunday_afternoon", day: "Sunday", time: "12:00-17:00"},
+];
+
+function renderWeekendUI() {
+  if (WKND_ROTATING_ORDER.length === 0 && EMPLOYEES.length > 0) {
+    WKND_ROTATING_ORDER = EMPLOYEES.map(e => e.id);
+  }
+
+  // Render excluded dates
+  const exclHtml = WKND_EXCLUDED.map((excl, i) =>
+    `<div class="row" style="margin-bottom:4px;">
+       <span>${excl.date} ${excl.label ? '('+excl.label+')' : ''}</span>
+       <button class="secondary" onclick="removeWkndExcluded(${i})">Remove</button>
+     </div>`
+  ).join('');
+  $("wkndExcludedList").innerHTML = exclHtml || "<p>None</p>";
+
+  // Render fixed assignments
+  const fixedTbody = $("wkndFixedTable").querySelector("tbody");
+  fixedTbody.innerHTML = WKND_SHIFTS.map(s => {
+    let options = `<option value="">-- Rotation --</option>`;
+    EMPLOYEES.forEach(e => {
+      const sel = (WKND_FIXED[s.key] == e.id) ? "selected" : "";
+      options += `<option value="${e.id}" ${sel}>${e.name}</option>`;
+    });
+    return `<tr>
+      <td>${s.key}</td>
+      <td>${s.day}</td>
+      <td>${s.time}</td>
+      <td><select onchange="updateWkndFixed('${s.key}', this.value)">${options}</select></td>
+    </tr>`;
+  }).join('');
+
+  // Render rotating pool
+  const rotTbody = $("wkndRotatingTable").querySelector("tbody");
+  // Filter out any IDs not in EMPLOYEES
+  WKND_ROTATING_ORDER = WKND_ROTATING_ORDER.filter(id => EMPLOYEES.find(e => e.id == id));
+  // Add any new employees
+  EMPLOYEES.forEach(e => {
+    if (!WKND_ROTATING_ORDER.includes(e.id)) WKND_ROTATING_ORDER.push(e.id);
+  });
+
+  rotTbody.innerHTML = WKND_ROTATING_ORDER.map((id, idx) => {
+    const e = EMPLOYEES.find(emp => emp.id == id);
+    if (!e) return '';
+    const isFixed = Object.values(WKND_FIXED).includes(String(id)) || Object.values(WKND_FIXED).includes(id);
+    const style = isFixed ? 'text-decoration: line-through; opacity: 0.6;' : '';
+    const fixedNote = isFixed ? ' (Excluded: Fixed)' : '';
+
+    return `<tr style="${style}">
+      <td>${idx + 1}</td>
+      <td>${e.name}${fixedNote}</td>
+      <td>
+        <button class="secondary" ${idx === 0 ? 'disabled' : ''} onclick="moveWkndRotating(${idx}, -1)">Up</button>
+        <button class="secondary" ${idx === WKND_ROTATING_ORDER.length - 1 ? 'disabled' : ''} onclick="moveWkndRotating(${idx}, 1)">Down</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  renderSavedWeekendSchedules();
+}
+
+window.removeWkndExcluded = (i) => {
+  WKND_EXCLUDED.splice(i, 1);
+  renderWeekendUI();
+};
+
+$("addExclBtn").onclick = () => {
+  const date = $("newExclDate").value;
+  const label = $("newExclLabel").value.trim();
+  if (!date) return;
+  WKND_EXCLUDED.push({date, label});
+  $("newExclDate").value = "";
+  $("newExclLabel").value = "";
+  renderWeekendUI();
+};
+
+window.updateWkndFixed = (shiftKey, empId) => {
+  if (empId) {
+    WKND_FIXED[shiftKey] = parseInt(empId, 10);
+  } else {
+    delete WKND_FIXED[shiftKey];
+  }
+  renderWeekendUI();
+};
+
+window.moveWkndRotating = (idx, dir) => {
+  if (idx + dir < 0 || idx + dir >= WKND_ROTATING_ORDER.length) return;
+  const tmp = WKND_ROTATING_ORDER[idx];
+  WKND_ROTATING_ORDER[idx] = WKND_ROTATING_ORDER[idx + dir];
+  WKND_ROTATING_ORDER[idx + dir] = tmp;
+  renderWeekendUI();
+};
+
+$("wkndHelpBtn").onclick = () => {
+  const popup = $("wkndHelpPopup");
+  popup.style.display = popup.style.display === "none" ? "block" : "none";
+};
+$("wkndHelpClose").onclick = () => $("wkndHelpPopup").style.display = "none";
+
+$("wkndGenerateBtn").onclick = async () => {
+  $("wkndMsg").textContent = "Generating preview...";
+  const config = {
+    start_date: $("wkndStart").value,
+    end_date: $("wkndEnd").value,
+    excluded_dates: WKND_EXCLUDED,
+    fixed_assignments: WKND_FIXED,
+    rotating_employees: WKND_ROTATING_ORDER,
+    shift_starting_person: $("wkndShiftPerson").checked
+  };
+
+  const res = await apiSend('/api/generate_weekend', 'POST', { config, folderId: FOLDER_ID });
+  if (res) {
+    LAST_WKND_PREVIEW = res;
+    $("wkndMsg").textContent = "Preview generated successfully.";
+    renderWeekendPreview(res);
+  }
+};
+
+function renderWeekendPreview(data) {
+  const empById = {};
+  data.employees.forEach(e => { empById[e.id] = e; });
+
+  let html = `<div class="row"><button id="wkndSaveBtn">Save schedule</button></div>`;
+
+  // Table of assignments
+  html += `<h3>Assignments</h3><table class="data-table">
+    <thead><tr><th>Friday (Weekend ID)</th><th>Date</th><th>Shift</th><th>Assigned</th><th>Type</th><th>Note</th></tr></thead><tbody>`;
+
+  data.assignments.forEach(ds => {
+    const empName = ds.assigned ? empById[ds.assigned].name : "<strong>Unfilled</strong>";
+    const origin = ds.origin || "";
+    const note = ds.unfilled_reason || "";
+    const isUnfilled = !ds.assigned ? "style='background-color:#ffeeee;'" : "";
+    html += `<tr ${isUnfilled}>
+      <td>${ds.friday}</td>
+      <td>${ds.date}</td>
+      <td>${ds.shift.key}</td>
+      <td>${empName}</td>
+      <td>${origin}</td>
+      <td>${note}</td>
+    </tr>`;
+  });
+  html += `</tbody></table>`;
+
+  // Summary
+  html += `<h3>Summary</h3><table class="data-table">
+    <thead><tr><th>Employee</th><th>Fixed Shifts</th><th>Rotating Shifts</th><th>Total Shifts</th><th>Notes</th></tr></thead><tbody>`;
+
+  data.employees.forEach(e => {
+    let fixed = 0;
+    let rotating = data.rotating_counts[e.id] || 0;
+    data.assignments.forEach(ds => {
+      if (ds.assigned === e.id && ds.origin === "fixed") fixed++;
+    });
+
+    let total = fixed + rotating;
+    let notes = [];
+    if (total === 0) {
+      if (Object.values(WKND_FIXED).includes(e.id)) notes.push("Fixed occurrences were excluded/outside range.");
+      else if (!data.effective_pool.includes(e.id)) notes.push("Cannot cover any remaining rotating shift in full or not in pool.");
+      else notes.push("No assignment before semester ended; limited openings.");
+    }
+
+    html += `<tr>
+      <td>${e.name}</td>
+      <td>${fixed}</td>
+      <td>${rotating}</td>
+      <td>${total}</td>
+      <td>${notes.join(" ")}</td>
+    </tr>`;
+  });
+  html += `</tbody></table>`;
+
+  $("wkndPreviewArea").innerHTML = html;
+  $("wkndSaveBtn").onclick = async () => {
+    const res = await apiSend('/api/save_weekend', 'POST', { folderId: FOLDER_ID, snapshot: data });
+    if (res && res.savedScheduleId) {
+      $("wkndMsg").textContent = "Saved successfully!";
+      renderSavedWeekendSchedules();
+    }
+  };
+}
+
+async function renderSavedWeekendSchedules() {
+  if (!FOLDER_ID) return;
+  const schedules = await apiGet(`/api/folders/${FOLDER_ID}/weekend_schedules`);
+  if (!schedules) return;
+
+  $("wkndSavedSchedules").innerHTML = schedules.map(s => {
+    const d = new Date(s.createdAt);
+    return `<div class="row card" style="margin-bottom:8px; display:flex; justify-content:space-between;">
+      <span>Saved on ${d.toLocaleString()}</span>
+      <div>
+        <button class="secondary" onclick="loadSavedWeekend(${s.id})">View</button>
+        <button class="secondary" onclick="deleteSavedWeekend(${s.id})">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+window.loadSavedWeekend = async (id) => {
+  const data = await apiGet(`/api/folders/${FOLDER_ID}/weekend_schedules/${id}`);
+  if (data) renderWeekendPreview(data);
+};
+
+window.deleteSavedWeekend = async (id) => {
+  if (confirm("Delete this saved weekend schedule?")) {
+    await apiSend(`/api/folders/${FOLDER_ID}/weekend_schedules/${id}`, 'DELETE', {confirm: true});
+    renderSavedWeekendSchedules();
+  }
+};

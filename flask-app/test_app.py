@@ -164,6 +164,60 @@ class AppTests(unittest.TestCase):
             self.assertEqual(restored.execute("select comment from folderavailability").fetchone()[0], "Keep me")
 
 
+
+    def test_weekend_generation_and_save(self):
+        ctx = self.context()
+        folder_id = ctx["folder"]["id"]
+
+        # Submit some people
+        self.submit("W1", {"Sat_07": 1, "Sat_08": 1, "Sat_09": 1, "Sat_10": 1, "Sat_11": 1})
+        self.submit("W2", {"Sat_12": 1, "Sat_13": 1, "Sat_14": 1, "Sat_15": 1, "Sat_16": 1})
+        self.submit("W3", {}) # empty availability
+
+        # Generate preview
+        config = {
+            "start_date": "2024-09-02",
+            "end_date": "2024-09-08",
+            "excluded_dates": [],
+            "fixed_assignments": {},
+            "rotating_employees": [1, 2, 3],
+            "shift_starting_person": True
+        }
+
+        roster_res = self.client.get("/api/employees", headers=self.headers).json
+        w1_id = next(e["id"] for e in roster_res if e["name"] == "W1")
+        w2_id = next(e["id"] for e in roster_res if e["name"] == "W2")
+        config["rotating_employees"] = [w1_id, w2_id]
+
+        res = self.client.post("/api/generate_weekend", json={"folderId": folder_id, "config": config}, headers=self.headers)
+        self.assertEqual(res.status_code, 200)
+        data = res.json
+        self.assertEqual(data["status"], "SUCCESS")
+
+        assignments = data["assignments"]
+        self.assertTrue(len(assignments) > 0)
+
+        saturday_morning = next(a for a in assignments if a["shift"]["key"] == "saturday_morning")
+        self.assertEqual(saturday_morning["assigned"], w1_id)
+
+        res2 = self.client.post("/api/save_weekend", json={"folderId": folder_id, "snapshot": data}, headers=self.headers)
+        self.assertEqual(res2.status_code, 200)
+        saved_id = res2.json["savedScheduleId"]
+
+        res3 = self.client.get(f"/api/folders/{folder_id}/weekend_schedules", headers=self.headers)
+        self.assertEqual(res3.status_code, 200)
+        self.assertEqual(len(res3.json), 1)
+        self.assertEqual(res3.json[0]["id"], saved_id)
+
+        res4 = self.client.get(f"/api/folders/{folder_id}/weekend_schedules/{saved_id}", headers=self.headers)
+        self.assertEqual(res4.status_code, 200)
+        self.assertEqual(res4.json["status"], "SUCCESS")
+
+        res5 = self.client.delete(f"/api/folders/{folder_id}/weekend_schedules/{saved_id}", headers=self.headers)
+        self.assertEqual(res5.status_code, 400)
+        res6 = self.client.delete(f"/api/folders/{folder_id}/weekend_schedules/{saved_id}", json={"confirm": True}, headers=self.headers)
+        self.assertEqual(res6.status_code, 200)
+
 class MigrationTests(unittest.TestCase):
     def test_legacy_import_preserves_settings_and_is_idempotent(self):
         path = TEST_DIR / "legacy.db"
@@ -184,6 +238,7 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(json.loads(Config.get_by_id(1).data_json)["maxShiftLength"], 8)
         self.assertEqual(row.get_data(), {"Mon_07":True})
         db.close()
+
 
 
 if __name__ == "__main__":
