@@ -274,7 +274,6 @@ async function refreshContext() {
   if (CONTEXT && (next.revision !== CONTEXT.revision || next.folder?.id !== CONTEXT.folder?.id) &&
       !confirm(`The submission destination is now ${next.folder?.name || "closed"}. Keep your entered availability and use this destination?`)) return;
   CONTEXT = next; CONFIG = next.config; LOAD_REVISION++;
-  $("submissionFolder").textContent = next.folder ? `Submitting to: ${next.folder.name}` : "No folder is accepting submissions.";
   $("submitBtn").disabled = !next.folder;
   renderGrid();
 }
@@ -283,7 +282,6 @@ async function refreshContext() {
 (async function init() {
   $("submitBtn").disabled = true;
   $("commentInput").oninput = updateCommentCount;
-  $("refreshFolderBtn").onclick = () => refreshContext().catch(() => showMsg("Could not refresh the folder. Please retry.", "err"));
   await refreshContext();
   await loadRoster();
   renderGrid();
