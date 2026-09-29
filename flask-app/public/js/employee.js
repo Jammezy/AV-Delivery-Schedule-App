@@ -39,7 +39,6 @@ function closeHourFor(day) {
   if (day === "Sat" || day === "Sun") return null;
   const perDay = CONFIG.dayCloseHours || {};
   if (perDay[day] !== undefined && perDay[day] !== null && perDay[day] !== "") return Number(perDay[day]);
-  if (day === "Fri" && CONFIG.fridayCloseHour != null) return Number(CONFIG.fridayCloseHour);
   return null;
 }
 
