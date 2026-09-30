@@ -36,7 +36,8 @@ function blockLabel(h) {
 }
 
 function closeHourFor(day) {
-  if (day === "Sat" || day === "Sun") return null;
+  if (day === "Sun") return 17;
+  if (day === "Sat") return null;
   const perDay = CONFIG.dayCloseHours || {};
   if (perDay[day] !== undefined && perDay[day] !== null && perDay[day] !== "") return Number(perDay[day]);
   return null;

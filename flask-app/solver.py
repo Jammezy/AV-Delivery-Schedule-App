@@ -36,6 +36,8 @@ def hours_of(cfg):
 
 def close_hour(day, cfg):
     """Hour this day stops being staffed, or None if it runs to hourEnd."""
+    if day == "Sun":
+        return 17
     per_day = cfg.get("dayCloseHours") or {}
     if day in per_day and per_day[day] not in (None, ""):
         return int(per_day[day])

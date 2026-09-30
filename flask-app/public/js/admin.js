@@ -51,6 +51,7 @@ function hours(cfg = CONFIG) {
   return out;
 }
 function closeHourFor(day, cfg = CONFIG) {
+  if (day === "Sun") return 17;
   const perDay = cfg.dayCloseHours || {};
   if (perDay[day] !== undefined && perDay[day] !== null && perDay[day] !== "") return Number(perDay[day]);
   if (day === "Fri" && cfg.fridayCloseHour != null) return Number(cfg.fridayCloseHour);
