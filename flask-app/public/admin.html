@@ -149,6 +149,32 @@
     <section id="tab-overview" class="card" style="display:none;">
       <h2>Who's submitted</h2>
       <div id="overviewArea"></div>
+
+      <div id="editAvailabilityModal" class="card" style="display:none; position:fixed; top:5%; left:5%; right:5%; bottom:5%; z-index:1000; overflow-y:auto; box-shadow:0 8px 24px rgba(0,0,0,0.3); background:white;">
+        <h2>Edit Availability: <span id="editAvailName"></span></h2>
+
+        <div class="row" style="margin-bottom:12px;">
+          <button class="paint-mode secondary" aria-pressed="true" data-mode="1">Available</button>
+          <button class="paint-mode secondary" aria-pressed="false" data-mode="2">Preferred</button>
+          <button class="paint-mode secondary" aria-pressed="false" data-mode="0">Unavailable</button>
+          <button class="secondary" id="editAvailClearBtn" style="margin-left:auto;">Clear All</button>
+        </div>
+
+        <div class="scroll-x">
+          <div id="editAvailGrid" class="wg-grid"></div>
+        </div>
+
+        <div style="margin-top:16px;">
+          <label>Comment: <input type="text" id="editAvailComment" maxlength="99" style="width:100%; max-width:400px; margin-top:4px;"></label>
+        </div>
+
+        <div class="row" style="margin-top:16px;">
+          <button id="editAvailSaveBtn">Save Changes</button>
+          <button id="editAvailCancelBtn" class="secondary">Cancel</button>
+        </div>
+        <div id="editAvailMsg" style="margin-top:8px;"></div>
+      </div>
+      <div id="editAvailabilityOverlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:999;"></div>
     </section>
 
     <section id="tab-settings" class="card" style="display:none;">

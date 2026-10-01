@@ -1,0 +1,138 @@
+
+*** Using the default admin password 'admin123'. Set ADMIN_PASSWORD before anyone else can reach this site. ***
+
+ * Serving Flask app 'app'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.0.2:5000
+[33mPress CTRL+C to quit[0m
+127.0.0.1 - - [01/Oct/2026 04:32:19] "GET /admin.html HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:20] "GET /css/style.css HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:20] "GET /js/folders.js HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:20] "GET /js/admin.js HTTP/1.1" 200 -
+/app/flask-app/app.py:42: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  return datetime.datetime.utcnow()
+127.0.0.1 - - [01/Oct/2026 04:32:22] "POST /api/admin/login HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:22] "GET /api/config HTTP/1.1" 200 -
+/app/flask-app/app.py:89: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  if not session or session.expires_at <= datetime.datetime.utcnow():
+127.0.0.1 - - [01/Oct/2026 04:32:22] "GET /api/folders HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:22] "GET /api/availability?folderId=1 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:22] "GET /api/diagnostics?folderId=1&selection=1 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:23] "[35m[1mPOST /api/folders HTTP/1.1[0m" 201 -
+127.0.0.1 - - [01/Oct/2026 04:32:23] "GET /api/folders HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:23] "GET /api/availability?folderId=2 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:23] "GET /api/diagnostics?folderId=2&selection=1 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:24] "GET /index.html HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:24] "GET /js/employee.js HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:24] "[36mGET /css/style.css HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:32:24] "GET /api/submission-context HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:24] "GET /api/roster HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:25] "GET /api/availability/Test%20Employee?folderId=2 HTTP/1.1" 200 -
+/app/flask-app/app.py:323: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  row.submitted_at = datetime.datetime.utcnow()
+127.0.0.1 - - [01/Oct/2026 04:32:26] "POST /api/availability HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:27] "[36mGET /admin.html HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:32:27] "[36mGET /css/style.css HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:32:27] "[36mGET /js/admin.js HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:32:27] "[36mGET /js/folders.js HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:32:27] "GET /api/config HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:27] "GET /api/folders HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:27] "GET /api/availability?folderId=2 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:27] "GET /api/diagnostics?folderId=2&selection=1&employeeId=1 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:27] "GET /api/folders/2/schedules HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:52] "GET /admin.html HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:52] "GET /js/folders.js HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:52] "GET /js/admin.js HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:52] "GET /css/style.css HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:54] "POST /api/admin/login HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:54] "GET /api/config HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:54] "GET /api/folders HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:54] "GET /api/availability?folderId=2 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:54] "GET /api/diagnostics?folderId=2&selection=1&employeeId=1 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:54] "GET /api/folders/2/schedules HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:55] "[35m[1mPOST /api/folders HTTP/1.1[0m" 201 -
+127.0.0.1 - - [01/Oct/2026 04:32:55] "GET /api/folders HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:55] "GET /api/availability?folderId=3 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:55] "GET /api/diagnostics?folderId=3&selection=1 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:56] "GET /index.html HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:56] "GET /js/employee.js HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:56] "[36mGET /css/style.css HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:32:56] "GET /api/submission-context HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:56] "GET /api/roster HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:57] "GET /api/availability/Test%20Employee?folderId=3 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:58] "POST /api/availability HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:59] "[36mGET /admin.html HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:32:59] "[36mGET /css/style.css HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:32:59] "[36mGET /js/folders.js HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:32:59] "[36mGET /js/admin.js HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:32:59] "GET /api/config HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:59] "GET /api/folders HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:59] "GET /api/availability?folderId=3 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:59] "GET /api/diagnostics?folderId=3&selection=1&employeeId=1 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:32:59] "GET /api/folders/3/schedules HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:33:00] "GET /api/availability?folderId=3 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:33:55] "GET /admin.html HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:33:55] "GET /css/style.css HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:33:55] "GET /js/folders.js HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:33:55] "GET /js/admin.js HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:33:56] "POST /api/admin/login HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:33:56] "GET /api/config HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:33:56] "GET /api/folders HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:33:56] "GET /api/availability?folderId=3 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:33:56] "GET /api/diagnostics?folderId=3&selection=1&employeeId=1 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:33:56] "GET /api/folders/3/schedules HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:33:57] "[35m[1mPOST /api/folders HTTP/1.1[0m" 201 -
+127.0.0.1 - - [01/Oct/2026 04:33:57] "GET /api/folders HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:33:57] "GET /api/availability?folderId=4 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:33:57] "GET /api/diagnostics?folderId=4&selection=1 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:33:58] "GET /index.html HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:33:58] "GET /js/employee.js HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:33:58] "[36mGET /css/style.css HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:33:58] "GET /api/submission-context HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:33:58] "GET /api/roster HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:33:59] "GET /api/availability/Test%20Employee?folderId=4 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:34:00] "POST /api/availability HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:34:01] "[36mGET /admin.html HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:34:01] "[36mGET /js/folders.js HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:34:01] "[36mGET /css/style.css HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:34:01] "[36mGET /js/admin.js HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:34:01] "GET /api/config HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:34:01] "GET /api/folders HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:34:01] "GET /api/availability?folderId=4 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:34:01] "GET /api/diagnostics?folderId=4&selection=1&employeeId=1 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:34:01] "GET /api/folders/4/schedules HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:34:02] "GET /api/availability?folderId=4 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:34:57] "GET /admin.html HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:34:57] "GET /js/admin.js HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:34:57] "GET /css/style.css HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:34:57] "GET /js/folders.js HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:34:58] "POST /api/admin/login HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:34:58] "GET /api/config HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:34:58] "GET /api/folders HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:34:58] "GET /api/availability?folderId=4 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:34:58] "GET /api/diagnostics?folderId=4&selection=1&employeeId=1 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:34:59] "GET /api/folders/4/schedules HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:35:00] "[35m[1mPOST /api/folders HTTP/1.1[0m" 201 -
+127.0.0.1 - - [01/Oct/2026 04:35:00] "GET /api/folders HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:35:00] "GET /api/availability?folderId=5 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:35:00] "GET /api/diagnostics?folderId=5&selection=1 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:35:01] "GET /index.html HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:35:01] "[36mGET /css/style.css HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:35:01] "GET /js/employee.js HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:35:01] "GET /api/submission-context HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:35:01] "GET /api/roster HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:35:02] "GET /api/availability/Test%20Employee?folderId=5 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:35:02] "POST /api/availability HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:35:03] "[36mGET /admin.html HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:35:03] "[36mGET /js/folders.js HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:35:03] "[36mGET /css/style.css HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:35:03] "[36mGET /js/admin.js HTTP/1.1[0m" 304 -
+127.0.0.1 - - [01/Oct/2026 04:35:03] "GET /api/config HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:35:03] "GET /api/folders HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:35:03] "GET /api/availability?folderId=5 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:35:03] "GET /api/diagnostics?folderId=5&selection=1&employeeId=1 HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:35:03] "GET /api/folders/5/schedules HTTP/1.1" 200 -
+127.0.0.1 - - [01/Oct/2026 04:35:04] "GET /api/availability?folderId=5 HTTP/1.1" 200 -

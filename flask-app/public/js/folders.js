@@ -2,6 +2,8 @@ let FOLDERS = [], FOLDER_ID = null, ACTIVE_FOLDER = null;
 let SELECTED = new Set(), OVERVIEW = null, PINNED = null, PREVIEWED = null;
 let VIEW_REVISION = 0;
 
+function $(id) { return document.getElementById(id); }
+
 function folderQuery() { return `folderId=${FOLDER_ID}`; }
 function selectionQuery() {
   return `${folderQuery()}&selection=1` + [...SELECTED].map(id => `&employeeId=${id}`).join("");
@@ -71,7 +73,10 @@ function drawViewer() {
   const id = PINNED ?? PREVIEWED;
   const employee = OVERVIEW.employees.find(e => e.id === id);
   const data = employee ? [validAvailability(OVERVIEW.availability[employee.name])] : Object.values(OVERVIEW.availability).map(validAvailability);
-  $("viewerCaption").textContent = employee ? `${PINNED ? "Pinned" : "Preview"}: ${employee.name} · Submitted ${new Date(OVERVIEW.submittedAt[employee.name]).toLocaleString()}` : "All submissions: available employee count per hour";
+  $("viewerCaption").innerHTML = employee
+      ? `${PINNED ? "Pinned" : "Preview"}: ${escapeHtml(employee.name)} · Submitted ${escapeHtml(new Date(OVERVIEW.submittedAt[employee.name]).toLocaleString())} ` +
+        (PINNED ? `<button class="secondary" id="openEditAvailBtn" style="margin-left: 8px; padding: 2px 8px; font-size: 0.85rem;">Edit</button>` : "")
+      : "All submissions: available employee count per hour";
   $("viewerComment").textContent = employee ? OVERVIEW.comments[employee.name] || "No comment" : "";
   $("overviewArea").querySelectorAll("[data-person]").forEach(b => b.setAttribute("aria-pressed", String(Number(b.dataset.person) === PINNED)));
   $("viewerGrid").innerHTML = `<table class="data-table"><thead><tr><th>Time</th>${CONFIG.availabilityDays.map(d => `<th>${d}</th>`).join("")}</tr></thead><tbody>${hours().map(h => `<tr><th>${blockLabel(h)}</th>${CONFIG.availabilityDays.map(d => {
@@ -80,7 +85,182 @@ function drawViewer() {
     const level = employee ? Number(data[0][key] || 0) : count > 0 ? 1 : 0;
     return `<td class="viewer-level-${level}">${employee ? level === 2 ? "Preferred" : level ? "Available" : "—" : count}</td>`;
   }).join("")}</tr>`).join("")}</tbody></table>`;
+
+  const editBtn = $("openEditAvailBtn");
+  if (editBtn) {
+    editBtn.onclick = () => openEditAvailabilityModal(employee);
+  }
 }
+
+// --- Edit Availability logic ---
+let editAvailState = {};
+let editAvailEmployee = null;
+let editAvailPainting = false;
+let editAvailMode = 1;
+let editAvailPaintedThisDrag = new Set();
+
+function openEditAvailabilityModal(employee) {
+  editAvailEmployee = employee;
+  editAvailState = Object.assign({}, validAvailability(OVERVIEW.availability[employee.name]));
+  $("editAvailName").textContent = employee.name;
+  $("editAvailComment").value = OVERVIEW.comments[employee.name] || "";
+  $("editAvailMsg").textContent = "";
+
+  $("editAvailabilityModal").style.display = "block";
+  $("editAvailabilityOverlay").style.display = "block";
+
+  renderEditAvailGrid();
+  bindEditAvailGrid();
+}
+
+function closeEditAvailabilityModal() {
+  $("editAvailabilityModal").style.display = "none";
+  $("editAvailabilityOverlay").style.display = "none";
+  editAvailEmployee = null;
+}
+
+function cellKey(day, hour) {
+  return `${day}_${String(hour).padStart(2, "0")}`;
+}
+
+function renderEditAvailGrid() {
+  const grid = $("editAvailGrid");
+  grid.style.setProperty("--cols", CONFIG.availabilityDays.length);
+  const parts = ['<div class="wg-corner"></div>'];
+
+  for (const day of CONFIG.availabilityDays) {
+    parts.push(`<button type="button" class="wg-daylabel" data-fillday="${day}" title="Fill or clear ${day}">${escapeHtml(day)}</button>`);
+  }
+
+  for (const h of hours()) {
+    parts.push(`<div class="wg-timelabel">${blockLabel(h)}</div>`);
+    for (const day of CONFIG.availabilityDays) {
+      const key = cellKey(day, h);
+      const ch = closeHourFor(day, CONFIG);
+      const closed = ch !== null && h >= ch;
+      parts.push(
+        `<button type="button" class="wg-cell" data-key="${key}" data-day="${day}" data-hour="${h}" data-level="${closed ? 0 : (editAvailState[key] || 0)}"
+           ${closed ? 'data-closed="1" disabled' : ""}
+           aria-pressed="${Boolean(editAvailState[key])}"></button>`
+      );
+    }
+  }
+  grid.innerHTML = parts.join("");
+}
+
+function editAvailPaint(cell) {
+  if (!cell || cell.hasAttribute("data-closed")) return;
+  const key = cell.dataset.key;
+  if (editAvailPaintedThisDrag.has(key)) return;
+  editAvailPaintedThisDrag.add(key);
+  if (editAvailMode === 0) {
+    delete editAvailState[key];
+  } else {
+    editAvailState[key] = editAvailMode;
+  }
+  cell.dataset.level = editAvailState[key] || 0;
+  cell.setAttribute("aria-pressed", String(Boolean(editAvailState[key])));
+}
+
+function editAvailToggleDay(day) {
+  const open = hours().filter(h => {
+    const ch = closeHourFor(day, CONFIG);
+    return ch === null || h < ch;
+  });
+  const allSet = open.every(h => (editAvailState[cellKey(day, h)] || 0) >= 1);
+  for (const h of open) {
+    const key = cellKey(day, h);
+    if (allSet) delete editAvailState[key];
+    else editAvailState[key] = Math.max(editAvailState[key] || 0, 1);
+  }
+  renderEditAvailGrid();
+}
+
+function bindEditAvailGrid() {
+  const grid = $("editAvailGrid");
+
+  const downHandler = (e) => {
+    const fill = e.target.closest("[data-fillday]");
+    if (fill) { editAvailToggleDay(fill.dataset.fillday); return; }
+    const cell = e.target.closest(".wg-cell");
+    if (!cell) return;
+    e.preventDefault();
+    editAvailPainting = true;
+    editAvailPaintedThisDrag = new Set();
+    try { grid.setPointerCapture(e.pointerId); } catch (_) {}
+    editAvailPaint(cell);
+  };
+
+  const moveHandler = (e) => {
+    if (!editAvailPainting) return;
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    if (el && el.classList && el.classList.contains("wg-cell")) editAvailPaint(el);
+  };
+
+  const clickHandler = e => {
+    if (e.detail !== 0) return;
+    const fill = e.target.closest("[data-fillday]");
+    if (fill) { editAvailToggleDay(fill.dataset.fillday); return; }
+    editAvailPaintedThisDrag = new Set(); editAvailPaint(e.target.closest(".wg-cell"));
+  };
+
+  const stopHandler = () => { editAvailPainting = false; editAvailPaintedThisDrag = new Set(); };
+
+  grid.onpointerdown = downHandler;
+  grid.onpointermove = moveHandler;
+  grid.onclick = clickHandler;
+  grid.onpointerup = stopHandler;
+  grid.onpointercancel = stopHandler;
+}
+
+document.querySelectorAll("#editAvailabilityModal .paint-mode").forEach(b => {
+  b.onclick = () => {
+    editAvailMode = Number(b.dataset.mode);
+    document.querySelectorAll("#editAvailabilityModal .paint-mode").forEach(btn =>
+      btn.setAttribute("aria-pressed", String(Number(btn.dataset.mode) === editAvailMode))
+    );
+  };
+});
+
+$("editAvailClearBtn").onclick = () => {
+  if (confirm("Clear every hour for this employee?")) {
+    editAvailState = {};
+    renderEditAvailGrid();
+  }
+};
+
+$("editAvailCancelBtn").onclick = closeEditAvailabilityModal;
+$("editAvailabilityOverlay").onclick = closeEditAvailabilityModal;
+
+$("editAvailSaveBtn").onclick = async () => {
+  if (!editAvailEmployee) return;
+  $("editAvailSaveBtn").disabled = true;
+  $("editAvailMsg").innerHTML = "Saving...";
+
+  const payload = {
+    employeeId: editAvailEmployee.id,
+    folderId: FOLDER_ID,
+    availability: editAvailState,
+    comment: $("editAvailComment").value
+  };
+
+  const r = await apiSend("/api/admin/availability", "PUT", payload);
+  $("editAvailSaveBtn").disabled = false;
+  if (!r) {
+    $("editAvailMsg").innerHTML = `<span style="color:var(--danger)">Network error saving availability.</span>`;
+    return;
+  }
+  if (!r.ok) {
+    $("editAvailMsg").innerHTML = `<span style="color:var(--danger)">${escapeHtml(r.data.error || "Failed to save.")}</span>`;
+    return;
+  }
+
+  closeEditAvailabilityModal();
+  await renderFolderOverview(false);
+  await refreshDiagnostics();
+};
+// ---------------------------------
+
 async function loadSavedSchedules() {
   const revision = VIEW_REVISION;
   const rows = await apiGet(`/api/folders/${FOLDER_ID}/schedules`);
