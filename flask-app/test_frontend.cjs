@@ -205,7 +205,7 @@ async function deletionAdmin({last=false}={}) {
     if(url==='/api/folders')return reply({folders,activeFolderId:active});
     if(url==='/api/staffing-plan')return reply({employees:overview.employees,requiredHours:30,allottedHours:10,remainingHours:20});
     if(url.startsWith('/api/availability?'))return reply({...overview,availability:{},submissions:[],comments:{}});
-    if(url.startsWith('/api/diagnostics?'))return reply({});
+    if(url.startsWith('/api/diagnostics?'))return reply({config});
     if(url.endsWith('/schedules')||url.endsWith('/weekend_schedules'))return reply([]);
     throw Error('Unexpected request '+url);
   };
@@ -222,7 +222,7 @@ test('deletion dialog shows escaped exact name, counts, preservation, active war
   const t=await deletionAdmin(), {doc,run,dom}=t;
   await doc.getElementById('deleteFolderBtn').onclick();
   const details=doc.getElementById('deleteFolderDetails');
-  assert.match(details.textContent,/Fall <2026>/); assert.equal(details.querySelector('2026'),null);
+  assert.match(details.textContent,/Fall <2026>/); assert.equal(details.querySelector('strong').textContent,'Fall <2026>'); assert.ok(details.innerHTML.includes('&lt;2026&gt;'));
   for(const text of ['3 availability','2 saved weekday','4 saved weekend','cannot be undone','roster entries','other folders','stops submissions','No other folder will be activated'])assert.ok(details.textContent.includes(text));
   const input=doc.getElementById('deleteFolderConfirmation'),button=doc.getElementById('deleteFolderConfirmBtn');
   input.value='fall <2026>';input.oninput();assert.equal(button.disabled,true);

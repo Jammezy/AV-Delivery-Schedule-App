@@ -47,7 +47,7 @@ async function check(viewport) {
     await page.locator('#passwordInput').fill('browser-test');await page.locator('#loginBtn').click();
     await page.locator('#folderSelect option').first().waitFor({state:'attached'});
     await page.locator('#folderSelect').selectOption(String(ids.target));
-    await page.locator('[data-person]').first().waitFor();
+    await page.locator('[data-person]').first().waitFor({state:'attached'});
     await page.locator('[data-tab=generate]').click();
     await page.locator('#savedSchedules [data-open]').first().click();
     await page.locator('#scheduleOutput table').waitFor();

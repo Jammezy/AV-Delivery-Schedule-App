@@ -36,6 +36,8 @@ with psycopg2.connect(os.environ["DATABASE_URL"]) as conn:
               VALUES ('Legacy','{"Mon_07":2,"Tue_07":true}', '2026-01-01');
             INSERT INTO config (data_json) VALUES ('{"wFairness":123}');""")
 
+conn.close()  # psycopg2 connection contexts commit but do not close the connection.
+
 def initialize_worker(_):
     result = subprocess.run([sys.executable,"-c","import app; print('initialized')"],
         cwd=Path(__file__).parent, capture_output=True,text=True,env=os.environ)

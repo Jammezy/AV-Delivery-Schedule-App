@@ -23,6 +23,7 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     defaults:
       run:
+        shell: bash
         working-directory: flask-app
     steps:
       - uses: actions/checkout@v4
