@@ -303,3 +303,11 @@ button:focus-visible, select:focus-visible, textarea:focus-visible { outline:3px
 .staffing-plan .stat-strip { display: flex; flex-wrap: wrap; gap: 12px; }
 .staffing-plan .stat { flex: 1 1 160px; min-width: 0; }
 .planning-balance { font-size: 1.25rem; overflow-wrap: anywhere; }
+
+
+/* Permanent folder confirmation stays usable on narrow screens. */
+#deleteFolderDialog { box-sizing:border-box; width:min(540px, calc(100% - 24px));
+  max-height:calc(100dvh - 24px); overflow:auto; border:0; border-radius:12px;
+  padding:24px; color:var(--text); overflow-wrap:anywhere; }
+#deleteFolderDialog::backdrop { background:rgba(0,0,0,.5); }
+#deleteFolderConfirmation { box-sizing:border-box; width:100%; margin-top:8px; }

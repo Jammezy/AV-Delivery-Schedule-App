@@ -72,7 +72,7 @@ async function apiGet(url) {
     if (res.status === 401) { clearSession(); return null; }
     if (!res.ok) { $("folderMsg").textContent = data.error || "Could not load data."; return null; }
     return data;
-  } catch (_) { if (TOKEN === token) $("folderMsg").textContent = "Connection failed. Please retry."; return null; }
+  } catch (_) { if (TOKEN === token && revision === VIEW_REVISION) $("folderMsg").textContent = "Connection failed. Please retry."; return null; }
 }
 async function apiSend(url, method, body) {
   const token = TOKEN, revision = VIEW_REVISION;
@@ -118,7 +118,9 @@ function clearSession() {
   TOKEN = null; CONFIG = null; EMPLOYEES = []; LAST_DIAG = null;
   FOLDERS = []; FOLDER_ID = ACTIVE_FOLDER = null; SELECTED.clear(); OVERVIEW = null;
   PINNED = PREVIEWED = null; VIEW_REVISION++;
-  clearResult();
+  clearResult(); clearWeekendView(); DELETION_BUSY = false; cancelFolderDeletion(); closeEditAvailabilityModal();
+  editAvailState = {};
+  $("editAvailGrid").innerHTML = ""; $("editAvailComment").value = "";
   for (const id of ["employeeTableWrap","overviewArea","diagArea","settingsForm","savedSchedules","generatorSelection","folderSelect","folderStatus","folderMsg","diagBadge"]) $(id).innerHTML = "";
   sessionStorage.removeItem("adminToken");
   $("passwordInput").value = "";
@@ -471,6 +473,8 @@ function fairnessTable(rows) {
 }
 
 async function generateSchedule() {
+  if (!FOLDER_ID) return;
+  const revision = VIEW_REVISION, folderId = FOLDER_ID, employeeIds = [...SELECTED];
   clearResult();
   const msg = $("generateMsg");
   msg.innerHTML = `<div class="msg info">Solving… this can take up to
@@ -480,9 +484,10 @@ async function generateSchedule() {
   $("regenerateBtn").disabled = true;
   await new Promise((r) => setTimeout(r, 30));
 
-  const r = await apiSend("/api/generate", "POST", { seed: Math.floor(Math.random() * 1e9), folderId:FOLDER_ID, employeeIds:[...SELECTED] });
-  $("generateBtn").disabled = false;
-  $("regenerateBtn").disabled = false;
+  if (revision !== VIEW_REVISION) return;
+  const r = await apiSend("/api/generate", "POST", { seed: Math.floor(Math.random() * 1e9), folderId, employeeIds });
+  if (revision !== VIEW_REVISION) return;
+  renderFolderControls();
   if (!r) return;
   const result = r.data;
 
@@ -563,6 +568,7 @@ function renderPrintableTable(schedule, cfg) {
 // ---------------- Excel export ----------------
 async function downloadExcel() {
   if (!LAST_RESULT) return;
+  const revision = VIEW_REVISION, result = LAST_RESULT;
   const { work, schedule, employees, fairness } = LAST_RESULT;
   const cfg = LAST_RESULT.config;
   const slots = slotNamesFor(cfg);
@@ -639,6 +645,7 @@ async function downloadExcel() {
   fs.columns.forEach((c) => (c.width = 18));
 
   const buf = await wb.xlsx.writeBuffer();
+  if (revision !== VIEW_REVISION || LAST_RESULT !== result || DELETION_BUSY) return;
   const url = URL.createObjectURL(new Blob([buf], { type: "application/octet-stream" }));
   const a = document.createElement("a");
   a.href = url; a.download = "Final_Schedule.xlsx"; a.click();
@@ -685,6 +692,15 @@ let WKND_EXCLUDED = [];
 let WKND_ROTATING_ORDER = [];
 let WKND_FIXED = {};
 let LAST_WKND_PREVIEW = null;
+
+function clearWeekendView() {
+  LAST_WKND_PREVIEW = null; WKND_EXCLUDED = []; WKND_ROTATING_ORDER = []; WKND_FIXED = {};
+  for (const id of ["wkndMsg", "wkndPreviewArea", "wkndSavedSchedules", "wkndExcludedList"]) $(id).innerHTML = "";
+  $("wkndFixedTable").querySelector("tbody").innerHTML = "";
+  $("wkndRotatingTable").querySelector("tbody").innerHTML = "";
+  for (const id of ["wkndStart", "wkndEnd", "newExclDate", "newExclLabel"]) $(id).value = "";
+  $("wkndHelpPopup").style.display = "none";
+}
 
 const WKND_SHIFTS = [
   {key: "friday_evening", day: "Friday", time: "19:00-22:00"},
@@ -793,6 +809,9 @@ $("wkndHelpBtn").onclick = () => {
 $("wkndHelpClose").onclick = () => $("wkndHelpPopup").style.display = "none";
 
 $("wkndGenerateBtn").onclick = async () => {
+  if (!FOLDER_ID) return;
+  const revision = VIEW_REVISION;
+  $("wkndGenerateBtn").disabled = true;
   $("wkndMsg").textContent = "Generating preview...";
   const config = {
     start_date: $("wkndStart").value,
@@ -804,18 +823,22 @@ $("wkndGenerateBtn").onclick = async () => {
   };
 
   const res = await apiSend('/api/generate_weekend', 'POST', { config, folderId: FOLDER_ID });
-  if (res) {
-    LAST_WKND_PREVIEW = res;
-    $("wkndMsg").textContent = "Preview generated successfully.";
-    renderWeekendPreview(res);
-  }
+  if (revision !== VIEW_REVISION) return;
+  renderFolderControls();
+  if (!res) return;
+  if (!res.ok) { $("wkndMsg").textContent = res.data.error || "Preview failed."; return; }
+  LAST_WKND_PREVIEW = res.data;
+  $("wkndMsg").textContent = "Preview generated successfully.";
+  renderWeekendPreview(res.data);
 };
 
 function renderWeekendPreview(data) {
+  const revision = VIEW_REVISION, folderId = FOLDER_ID;
+  LAST_WKND_PREVIEW = data;
   const empById = {};
   data.employees.forEach(e => { empById[e.id] = e; });
 
-  let html = `<div class="row"><button id="wkndSaveBtn">Save schedule</button></div>`;
+  let html = data.folderVersion ? `<div class="row"><button id="wkndSaveBtn">Save schedule</button></div>` : "";
 
   // Table of assignments
   html += `<h3>Assignments</h3><table class="data-table">
@@ -866,13 +889,19 @@ function renderWeekendPreview(data) {
   });
   html += `</tbody></table>`;
 
-  $("wkndPreviewArea").innerHTML = html;
+  $("wkndPreviewArea").innerHTML = `<div class="scroll-x">${html}</div>`;
+  if (!$("wkndSaveBtn")) return;
   $("wkndSaveBtn").onclick = async () => {
-    const res = await apiSend('/api/save_weekend', 'POST', { folderId: FOLDER_ID, snapshot: data });
-    if (res && res.savedScheduleId) {
+    if (revision !== VIEW_REVISION || folderId !== FOLDER_ID) return;
+    const button = $("wkndSaveBtn"); button.disabled = true;
+    const res = await apiSend('/api/save_weekend', 'POST', { folderId, snapshot: data });
+    if (revision !== VIEW_REVISION) return;
+    button.disabled = false;
+    if (!res) return;
+    if (res.ok && res.data.savedScheduleId) {
       $("wkndMsg").textContent = "Saved successfully!";
-      renderSavedWeekendSchedules();
-    }
+      await renderSavedWeekendSchedules();
+    } else { $("wkndMsg").textContent = res.data.error || "Saving failed. Please retry."; }
   };
 }
 
@@ -890,7 +919,7 @@ async function renderSavedWeekendSchedules() {
         <button class="secondary" onclick="deleteSavedWeekend(${s.id})">Delete</button>
       </div>
     </div>`;
-  }).join('');
+  }).join('') || 'No saved weekend schedules yet.';
 }
 
 window.loadSavedWeekend = async (id) => {
@@ -904,3 +933,4 @@ window.deleteSavedWeekend = async (id) => {
     renderSavedWeekendSchedules();
   }
 };
+

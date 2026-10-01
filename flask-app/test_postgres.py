@@ -87,3 +87,54 @@ code = "from app import app; c=app.test_client(); x=c.get('/api/submission-conte
 result = subprocess.run([sys.executable,'-c',code],cwd=Path(__file__).parent,env=os.environ,capture_output=True,text=True)
 assert result.returncode == 0, result.stderr
 print('PASS PostgreSQL: concurrent startup/migration, legacy preferences/settings, concurrent submissions, folder isolation, stale form rejection, saved snapshot, logout, and fresh-process persistence.')
+
+
+# Reuse deletion regressions only after this script has created its unique local
+# database. Do not import test_app: its SQLite setup changes database environment.
+import unittest
+from models import init_db
+from test_folder_deletion import FolderDeletionTests
+
+class PostgresDeletionTests(FolderDeletionTests, unittest.TestCase):
+    def setUp(self):
+        with db.connection_context():
+            db.execute_sql('TRUNCATE TABLE adminsession, savedweekendschedule, savedschedule, '
+                'folderavailability, submissionstate, folder, availability, employee, config RESTART IDENTITY')
+        init_db()
+        self.client = web.app.test_client()
+        token = self.client.post('/api/admin/login', json={'password': 'test-admin'}).json['token']
+        self.headers = {'Authorization': 'Bearer ' + token}
+
+    def tearDown(self):
+        if not db.is_closed():
+            db.close()
+
+    def context(self):
+        return self.client.get('/api/submission-context').json
+
+    def submit(self, name='Alex', availability=None, comment='', context=None):
+        ctx = context or self.context()
+        return self.client.post('/api/availability', json={'name': name,
+            'availability': {'Mon_07': True, 'Sat_09': True} if availability is None else availability,
+            'comment': comment, 'folderId': ctx['folder']['id'], 'revision': ctx['revision']})
+
+    def create_folder(self, name, activate=True):
+        response = self.client.post('/api/folders', headers=self.headers, json={'name': name, 'activate': activate})
+        self.assertEqual(response.status_code, 201, response.json)
+        return response.json
+
+    def overview(self, folder_id):
+        return self.client.get(f'/api/availability?folderId={folder_id}', headers=self.headers).json
+
+try:
+    result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(PostgresDeletionTests))
+finally:
+    if not db.is_closed():
+        db.close()
+    admin = psycopg2.connect(host='127.0.0.1', port=port, user='recovery_test', dbname='postgres')
+    admin.autocommit = True
+    with admin.cursor() as cursor:
+        cursor.execute(sql.SQL('DROP DATABASE {}').format(sql.Identifier(database)))
+    admin.close()
+if not result.wasSuccessful():
+    sys.exit(1)

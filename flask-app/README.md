@@ -314,3 +314,64 @@ reopens them with the Node reader. Injecting the Node workbook constructor into
 JSDOM is invalid because ExcelJS checks arrays using `instanceof Array`.
 The disposable PostgreSQL check and its isolation requirements are documented in
 `test_postgres.py`; never point that test at a live database.
+
+
+
+### Permanent folder deletion
+
+`Delete folder permanently` is separate from Archive / restore. The supervisor
+reviews the exact name and counts, types that name, then confirms deletion.
+Availability (including comments/timestamps), weekday snapshots, weekend
+snapshots, and the folder are removed by folder ID in one write transaction.
+Employees, minimum/maximum hours, lead flags, global settings, legacy storage,
+and every other folder are preserved. Deleting the active folder stops submissions
+and increments the submission revision; it never activates another folder.
+
+The preview version hashes folder identity/state and all dependent record
+contents under the existing write lock. Changed submissions, snapshots, names,
+or submission status require a new preview and freshly typed confirmation.
+Weekday generation releases the lock during solver work and rechecks folder
+identity inside the snapshot-write transaction. Weekend generation rechecks at
+completion; weekend saves require the generated folder ID and creation version.
+Legacy saved weekend snapshots remain viewable; generate a fresh preview to save
+again. No schema migration is required.
+
+The folder view revision invalidates pending requests after deletion, clearing
+availability/comments, selection, diagnostics, both previews/lists, and export
+state. Another folder may be selected for viewing, without activating it. The
+last-folder state keeps folder creation and roster-wide planning available.
+
+Additional disposable browser checks:
+
+```sh
+npm install --no-save jsdom@30.1.0 exceljs@4.4.0 playwright@1.58.2
+npx playwright install --with-deps chromium
+node test_deletion_browser.cjs
+```
+
+The browser test creates temporary SQLite fixtures, overwrites DATABASE_URL with
+an empty value, starts only a local Flask server, and checks confirmation,
+cancellation, repeated-submit protection, preservation, final-folder cleanup,
+and desktop/375px layouts. The PR workflow also runs the shared deletion tests
+against a newly created database on a dedicated local PostgreSQL service. It
+uses no production database credentials.
+
+For manual review, use a disposable local database (never production Neon):
+
+1. Run the regression/browser checks above, then create a fresh local database
+   with DATABASE_URL unset and DATABASE_PATH pointing to a new temporary path.
+2. Add a folder, activate it, and submit two fictional employees with comments.
+   Generate and save a weekday schedule and a Friday-evening–Sunday weekend
+   schedule. Create a second folder containing its own submissions/snapshots.
+3. Open both schedule types, pin a submission, and open permanent deletion.
+   Check the exact name, all three counts, preservation statement, and active
+   submission warning. Cancel and verify the data remains. Type an incorrect
+   name, then the exact name; only the latter enables Delete permanently.
+4. Change a submission or add a snapshot in a second tab after previewing. Confirm
+   deletion and verify the conflict refreshes counts and requires typing again.
+5. Delete the folder. Confirm previews, comments, selection, diagnostics, export
+   controls, and both saved lists no longer expose its data. The other folder and
+   employee targets/settings remain; no new submission folder becomes active.
+6. Submit a previously opened employee form and confirm rejection. Delete the
+   final folder and check the empty state, creation controls, Employees, and
+   Weekly hours remaining. Repeat at a 375px viewport and inspect the dialog.
