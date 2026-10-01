@@ -255,9 +255,11 @@ def delete_employee(name):
 
 @app.get("/api/submission-context")
 def submission_context():
-    state = SubmissionState.get_by_id(1)
-    return jsonify(folder=folder_json(state.active_folder) if state.active_folder_id else None,
-                   revision=state.revision, config=get_config())
+    with write_transaction():
+        state = SubmissionState.get_by_id(1)
+        result = {"folder": folder_json(state.active_folder) if state.active_folder_id else None,
+                  "revision": state.revision, "config": get_config()}
+    return jsonify(result)
 
 
 @app.get("/api/folders")
@@ -312,6 +314,73 @@ def edit_folder(folder_id):
     return jsonify(folder_json(folder))
 
 
+def deletion_scope(folder):
+    """Call under write_transaction so the counts and version share one scope.
+
+    Hash contents, not just counts: edits and same-count replacements invalidate
+    confirmation too. No schema migration or process-local version is needed.
+    """
+    state = SubmissionState.get_by_id(1)
+    active = state.active_folder_id == folder.id
+    digest = hashlib.sha256()
+    def include(value):
+        digest.update(json.dumps(value, sort_keys=True, default=str).encode())
+        digest.update(b"\n")
+    include([folder.id, folder.name, folder.archived, folder.created_at, active,
+             state.revision if active else None])
+    counts = {}
+    for key, model in (("availabilitySubmissions", FolderAvailability),
+                       ("weekdaySchedules", SavedSchedule),
+                       ("weekendSchedules", SavedWeekendSchedule)):
+        include(key)
+        counts[key] = 0
+        for row in model.select().where(model.folder == folder.id).order_by(model.id).dicts():
+            include(row)
+            counts[key] += 1
+    return {"folder": folder_json(folder), "counts": counts,
+            "acceptsSubmissions": active, "previewVersion": digest.hexdigest()}
+
+
+@app.get("/api/folders/<int:folder_id>/deletion-preview")
+@require_admin
+def folder_deletion_preview(folder_id):
+    with write_transaction():
+        preview = deletion_scope(folder_or_404(folder_id))
+    return jsonify(preview)
+
+
+@app.delete("/api/folders/<int:folder_id>")
+@require_admin
+def delete_folder(folder_id):
+    data = body()
+    with write_transaction():
+        folder = folder_or_404(folder_id)
+        if not isinstance(data.get("confirmationName"), str) or data["confirmationName"] != folder.name:
+            abort(400, "Type the exact folder name to confirm permanent deletion.")
+        version = data.get("previewVersion")
+        if not isinstance(version, str) or not re.fullmatch(r"[0-9a-f]{64}", version):
+            abort(400, "A deletion preview is required before confirmation.")
+        preview = deletion_scope(folder)
+        if not secrets.compare_digest(version, preview["previewVersion"]):
+            abort(409, "This folder changed since the deletion preview. Review a fresh preview and type the folder name again.")
+        if preview["acceptsSubmissions"]:
+            SubmissionState.update(active_folder=None, revision=SubmissionState.revision + 1).where(SubmissionState.id == 1).execute()
+        SavedSchedule.delete().where(SavedSchedule.folder == folder.id).execute()
+        SavedWeekendSchedule.delete().where(SavedWeekendSchedule.folder == folder.id).execute()
+        FolderAvailability.delete().where(FolderAvailability.folder == folder.id).execute()
+        folder.delete_instance()
+    return jsonify(ok=True, deletedFolderId=folder_id, deletedCounts=preview["counts"])
+
+
+def recheck_generation_folder(original):
+    current = folder_or_404(original.id)
+    # SQLite can reuse IDs after deleting the final folder. A replacement folder
+    # is not the folder whose inputs were read before the solver ran.
+    if current.created_at != original.created_at:
+        abort(409, "The original folder was deleted. Refresh before generating again.")
+    return current
+
+
 @app.post("/api/availability")
 def submit_availability():
     data = body()
@@ -328,6 +397,7 @@ def submit_availability():
             abort(409, "No folder is accepting submissions.")
         if data.get("folderId") != state.active_folder_id or data.get("revision") != state.revision:
             abort(409, "The submission folder changed. Refresh the form and confirm the current folder before submitting.")
+        folder_or_404(state.active_folder_id)
         cfg = get_config()
         valid = {f"{d}_{h:02d}" for d in cfg['availabilityDays'] for h in range(cfg["hourStart"], cfg["hourEnd"] + 1)}
         if any(k not in valid or (type(v) not in (int, bool) or v not in (0, 1, 2)) for k, v in availability.items()):
@@ -465,6 +535,9 @@ def generate_weekend():
 
     result = weekend_generator.generate_weekend_schedule(config, availability, roster)
 
+    with write_transaction():
+        recheck_generation_folder(folder)
+
     # Send it back
     return jsonify({
         "status": "SUCCESS",
@@ -473,7 +546,8 @@ def generate_weekend():
         "rotating_counts": result["rotating_counts"],
         "employees": roster,
         "config": config,
-        "folderId": folder.id
+        "folderId": folder.id,
+        "folderVersion": folder.created_at.isoformat()
     })
 
 
@@ -483,12 +557,14 @@ def save_weekend():
     data = body()
     folder_id = data.get("folderId")
     snapshot = data.get("snapshot")
-    if not snapshot or not folder_id:
+    if not isinstance(snapshot, dict) or not snapshot or not folder_id:
         abort(400, "Missing snapshot or folder.")
     with write_transaction():
         folder = folder_or_404(folder_id)
+        if snapshot.get("folderId") != folder.id or snapshot.get("folderVersion") != folder.created_at.isoformat():
+            abort(409, "The weekend preview does not belong to this folder. Generate a fresh preview before saving.")
         saved = SavedWeekendSchedule.create(folder=folder, snapshot_json=json.dumps(snapshot))
-        return jsonify({"savedScheduleId": saved.id})
+    return jsonify({"savedScheduleId": saved.id})
 
 
 @app.get("/api/folders/<int:folder_id>/weekend_schedules")
@@ -502,15 +578,16 @@ def weekend_schedules(folder_id):
 @app.route("/api/folders/<int:folder_id>/weekend_schedules/<int:schedule_id>", methods=["GET", "DELETE"])
 @require_admin
 def saved_weekend_schedule(folder_id, schedule_id):
-    saved = SavedWeekendSchedule.get_or_none((SavedWeekendSchedule.id == schedule_id) & (SavedWeekendSchedule.folder == folder_id))
-    if not saved:
-        abort(404, "Saved schedule not found.")
-    if request.method == "DELETE":
-        if body().get("confirm") is not True:
-            abort(400, "Confirm deletion of this saved schedule.")
-        saved.delete_instance()
-        return jsonify(ok=True)
-    return jsonify(json.loads(saved.snapshot_json))
+    with write_transaction():
+        saved = SavedWeekendSchedule.get_or_none((SavedWeekendSchedule.id == schedule_id) & (SavedWeekendSchedule.folder == folder_id))
+        if not saved:
+            abort(404, "Saved schedule not found.")
+        if request.method == "DELETE":
+            if body().get("confirm") is not True:
+                abort(400, "Confirm deletion of this saved schedule.")
+            saved.delete_instance()
+            return jsonify(ok=True)
+        return jsonify(json.loads(saved.snapshot_json))
 
 
 @app.post("/api/generate")
@@ -533,12 +610,14 @@ def generate():
     if seed is not None and (type(seed) is not int or not 0 <= seed < 2**31):
         abort(400, "Invalid generation seed.")
     result = solver_module.generate_schedule(roster, availability, cfg, seed=seed)
-    if result["status"] not in ("OPTIMAL", "FEASIBLE"):
-        return jsonify(result)
-    result.update(employees=roster, config=cfg)
-    snapshot = {"result": result, "submissions": submissions, "employeeIds": ids,
-                "folder": folder_json(folder)}
-    saved = SavedSchedule.create(folder=folder, snapshot_json=json.dumps(snapshot))
+    with write_transaction():
+        recheck_generation_folder(folder)
+        if result["status"] not in ("OPTIMAL", "FEASIBLE"):
+            return jsonify(result)
+        result.update(employees=roster, config=cfg)
+        snapshot = {"result": result, "submissions": submissions, "employeeIds": ids,
+                    "folder": folder_json(folder)}
+        saved = SavedSchedule.create(folder=folder, snapshot_json=json.dumps(snapshot))
     result["savedScheduleId"] = saved.id
     return jsonify(result)
 
@@ -554,15 +633,16 @@ def schedules(folder_id):
 @app.route("/api/folders/<int:folder_id>/schedules/<int:schedule_id>", methods=["GET", "DELETE"])
 @require_admin
 def saved_schedule(folder_id, schedule_id):
-    saved = SavedSchedule.get_or_none((SavedSchedule.id == schedule_id) & (SavedSchedule.folder == folder_id))
-    if not saved:
-        abort(404, "Saved schedule not found.")
-    if request.method == "DELETE":
-        if body().get("confirm") is not True:
-            abort(400, "Confirm deletion of this saved schedule.")
-        saved.delete_instance()
-        return jsonify(ok=True)
-    return jsonify(json.loads(saved.snapshot_json))
+    with write_transaction():
+        saved = SavedSchedule.get_or_none((SavedSchedule.id == schedule_id) & (SavedSchedule.folder == folder_id))
+        if not saved:
+            abort(404, "Saved schedule not found.")
+        if request.method == "DELETE":
+            if body().get("confirm") is not True:
+                abort(400, "Confirm deletion of this saved schedule.")
+            saved.delete_instance()
+            return jsonify(ok=True)
+        return jsonify(json.loads(saved.snapshot_json))
 
 
 # ---------------- static frontend ----------------

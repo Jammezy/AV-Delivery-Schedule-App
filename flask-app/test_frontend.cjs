@@ -183,3 +183,148 @@ test('employee saves preferences and comments to displayed folder and retains fa
   doc.getElementById('commentInput').value='🙂'.repeat(99);run('updateCommentCount()');assert.match(doc.getElementById('commentCount').textContent,/99 \/ 99/);
   dom.window.close();
 });
+
+
+async function deletionAdmin({last=false}={}) {
+  const t=await admin(), {dom,run,doc}=t;
+  let folders=[{id:1,name:'Fall <2026>',archived:false},...last?[]:[{id:2,name:'Summer',archived:false}]];
+  let active=1, fail=false, conflict=false, deletionCalls=0;
+  const preview={folder:folders[0],counts:{availabilitySubmissions:3,weekdaySchedules:2,weekendSchedules:4},acceptsSubmissions:true,previewVersion:'version-1'};
+  const requests=[];
+  const reply=(data,ok=true,status=200)=>({ok,status,json:async()=>structuredClone(data)});
+  const normalFetch=async(url,opts={})=>{
+    requests.push({url,opts});
+    if (url.endsWith('/deletion-preview')) return reply({...preview,folder:folders.find(f=>url.includes(`/folders/${f.id}/`))});
+    if (opts.method==='DELETE' && /^\/api\/folders\/\d+$/.test(url)) {
+      deletionCalls++;
+      if (fail) return reply({error:'Delete failed'},false,503);
+      if (conflict) {conflict=false;return reply({error:'Scope changed; confirm again'},false,409);}
+      const id=Number(url.split('/').pop()); folders=folders.filter(f=>f.id!==id);if(active===id)active=null;
+      return reply({ok:true,deletedFolderId:id});
+    }
+    if(url==='/api/folders')return reply({folders,activeFolderId:active});
+    if(url==='/api/staffing-plan')return reply({employees:overview.employees,requiredHours:30,allottedHours:10,remainingHours:20});
+    if(url.startsWith('/api/availability?'))return reply({...overview,availability:{},submissions:[],comments:{}});
+    if(url.startsWith('/api/diagnostics?'))return reply({config});
+    if(url.endsWith('/schedules')||url.endsWith('/weekend_schedules'))return reply([]);
+    throw Error('Unexpected request '+url);
+  };
+  dom.window.fetch=normalFetch;
+  run(`FOLDERS=${JSON.stringify(folders)}; ACTIVE_FOLDER=1; FOLDER_ID=1; renderFolderControls();
+    renderDiagnostics=()=>{}; LAST_RESULT={deleted:true}; LAST_DIAG={deleted:true}; LAST_WKND_PREVIEW={deleted:true};
+    WKND_FIXED={friday_evening:1}; WKND_ROTATING_ORDER=[1]; WKND_EXCLUDED=[{date:'2026-10-01'}];`);
+  for(const id of ['scheduleOutput','fairnessOutput','wkndPreviewArea','wkndSavedSchedules','savedSchedules','diagArea'])doc.getElementById(id).textContent='Deleted-folder data';
+  doc.getElementById('downloadBtn').style.display='inline-block';
+  return {...t,requests,normalFetch,reply,setFail:v=>fail=v,setConflict:v=>conflict=v,deletionCalls:()=>deletionCalls};
+}
+
+test('deletion dialog shows escaped exact name, counts, preservation, active warning and typed confirmation',async()=>{
+  const t=await deletionAdmin(), {doc,run,dom}=t;
+  await doc.getElementById('deleteFolderBtn').onclick();
+  const details=doc.getElementById('deleteFolderDetails');
+  assert.match(details.textContent,/Fall <2026>/); assert.equal(details.querySelector('strong').textContent,'Fall <2026>'); assert.ok(details.innerHTML.includes('&lt;2026&gt;'));
+  for(const text of ['3 availability','2 saved weekday','4 saved weekend','cannot be undone','roster entries','other folders','stops submissions','No other folder will be activated'])assert.ok(details.textContent.includes(text));
+  const input=doc.getElementById('deleteFolderConfirmation'),button=doc.getElementById('deleteFolderConfirmBtn');
+  input.value='fall <2026>';input.oninput();assert.equal(button.disabled,true);
+  input.value='Fall <2026> ';input.oninput();assert.equal(button.disabled,true);
+  input.value='Fall <2026>';input.oninput();assert.equal(button.disabled,false);
+  doc.getElementById('deleteFolderCancelBtn').onclick();assert.equal(doc.getElementById('deleteFolderDialog').open,false);
+  assert.equal(t.deletionCalls(),0);assert.equal(run('LAST_RESULT.deleted'),true);dom.window.close();
+});
+
+test('committed deletion refreshes both lists, clears cached results and edit state, preserves roster planning',async()=>{
+  const t=await deletionAdmin(), {doc,run,dom}=t;
+  await run('openFolderDeletion()');
+  run('editAvailEmployee={id:1}; editAvailState={Mon_07:2}; PINNED=1; PREVIEWED=1;');
+  doc.getElementById('editAvailComment').value='Deleted comment';
+  doc.getElementById('deleteFolderConfirmation').value='Fall <2026>';
+  await run('confirmFolderDeletion()');
+  assert.equal(run('FOLDER_ID'),2); assert.equal(run('ACTIVE_FOLDER'),null);
+  assert.equal(run('LAST_RESULT'),null);assert.equal(run('LAST_WKND_PREVIEW'),null);assert.equal(run('LAST_DIAG'),null);
+  assert.equal(run('SELECTED.size'),0);assert.equal(run('PINNED'),null);assert.equal(run('editAvailEmployee'),null);
+  assert.equal(doc.getElementById('editAvailComment').value,'');
+  assert.equal(run('WKND_ROTATING_ORDER.length'),0);assert.equal(run('Object.keys(WKND_FIXED).length'),0);
+  assert.equal(doc.getElementById('wkndPreviewArea').textContent,'');assert.equal(doc.getElementById('downloadBtn').style.display,'none');
+  assert.match(doc.getElementById('savedSchedules').textContent,/No saved/);assert.match(doc.getElementById('wkndSavedSchedules').textContent,/No saved/);
+  assert.match(doc.getElementById('diagnosticsStaffingPlan').textContent,/20 hours remaining/);
+  assert.match(doc.getElementById('folderMsg').textContent,/permanently deleted/);
+  dom.window.close();
+});
+
+test('final-folder deletion leaves empty state and available shared-roster and creation controls',async()=>{
+  const {run,doc,dom,requests}=await deletionAdmin({last:true});
+  await run('openFolderDeletion()');doc.getElementById('deleteFolderConfirmation').value='Fall <2026>';
+  await run('confirmFolderDeletion()');assert.equal(run('FOLDER_ID'),null);
+  assert.match(doc.getElementById('overviewArea').textContent,/No folders yet/);
+  for(const id of ['deleteFolderBtn','generateBtn','wkndGenerateBtn'])assert.equal(doc.getElementById(id).disabled,true);
+  for(const id of ['createFolderBtn','addEmpBtn'])assert.equal(doc.getElementById(id).disabled,false);
+  assert.match(doc.getElementById('employeesStaffingPlan').textContent,/20 hours remaining/);
+  assert.ok(!requests.some(r=>/folderId=(null|0)|folders\/(null|0)/.test(r.url)));
+  dom.window.close();
+});
+
+test('failure retains view and permits retry; conflict refresh requires freshly typed confirmation',async()=>{
+  const t=await deletionAdmin(), {doc,run,dom}=t;
+  t.setFail(true);await run('openFolderDeletion()');doc.getElementById('deleteFolderConfirmation').value='Fall <2026>';
+  await run('confirmFolderDeletion()');assert.equal(run('FOLDER_ID'),1);assert.equal(run('LAST_RESULT.deleted'),true);
+  assert.equal(doc.getElementById('scheduleOutput').textContent,'Deleted-folder data');
+  assert.match(doc.getElementById('deleteFolderError').textContent,/Delete failed/);assert.equal(doc.getElementById('deleteFolderConfirmBtn').disabled,false);
+  t.setFail(false);t.setConflict(true);await run('confirmFolderDeletion()');
+  assert.equal(doc.getElementById('deleteFolderConfirmation').value,'');assert.equal(doc.getElementById('deleteFolderConfirmBtn').disabled,true);
+  assert.match(doc.getElementById('deleteFolderError').textContent,/Scope changed/);
+  assert.equal(run('FOLDER_ID'),1);dom.window.close();
+});
+
+test('busy deletion prevents repeated submits and captures its original folder across a view switch',async()=>{
+  const t=await deletionAdmin(), {doc,run,dom}=t;
+  await run('openFolderDeletion()');doc.getElementById('deleteFolderConfirmation').value='Fall <2026>';
+  let release;
+  dom.window.fetch=(url,opts)=>opts?.method==='DELETE'?new Promise(resolve=>release=()=>t.normalFetch(url,opts).then(resolve)):t.normalFetch(url,opts);
+  const pending=run('confirmFolderDeletion()');
+  for(const id of ['deleteFolderConfirmBtn','deleteFolderCancelBtn','deleteFolderConfirmation','deleteFolderBtn'])assert.equal(doc.getElementById(id).disabled,true);
+  await run('confirmFolderDeletion()');assert.equal(t.deletionCalls(),0);
+  doc.getElementById('folderSelect').value='2';await run('changeFolder()');
+  release();await pending;
+  const mutation=t.requests.find(r=>r.opts.method==='DELETE');assert.equal(mutation.url,'/api/folders/1');
+  assert.equal(JSON.parse(mutation.opts.body).confirmationName,'Fall <2026>');assert.equal(run('FOLDER_ID'),2);assert.equal(t.deletionCalls(),1);
+  dom.window.close();
+});
+
+test('switching folders or cancelling while preview loads discards the original confirmation target',async()=>{
+  const t=await deletionAdmin(), {doc,run,dom}=t;
+  let release;dom.window.fetch=(url,opts)=>url.endsWith('/deletion-preview')?new Promise(resolve=>release=()=>t.normalFetch(url,opts).then(resolve)):t.normalFetch(url,opts);
+  const pending=run('openFolderDeletion()');doc.getElementById('folderSelect').value='2';await run('changeFolder()');
+  release();await pending;assert.equal(run('DELETION_PREVIEW'),null);assert.equal(doc.getElementById('deleteFolderDialog').open,false);
+  const second=run('openFolderDeletion()');run('cancelFolderDeletion()');release();await second;
+  assert.equal(run('DELETION_PREVIEW'),null);await run('confirmFolderDeletion()');assert.equal(t.deletionCalls(),0);dom.window.close();
+});
+
+test('pending weekday, weekend and overview responses cannot repopulate a deleted view',async()=>{
+  const t=await deletionAdmin({last:true}), {doc,run,dom}=t;
+  await run('openFolderDeletion()');doc.getElementById('deleteFolderConfirmation').value='Fall <2026>';
+  const held=[];
+  dom.window.fetch=(url,opts)=>['/api/availability?folderId=1','/api/folders/1/schedules','/api/folders/1/weekend_schedules'].includes(url)?new Promise(resolve=>held.push({url,resolve})):t.normalFetch(url,opts);
+  const pending=[run('renderOverview()'),run('loadSavedSchedules()'),run('renderSavedWeekendSchedules()')];
+  await run('confirmFolderDeletion()');
+  for(const h of held)h.resolve(t.reply(h.url.includes('availability')?overview:[{id:99,createdAt:'2026-01-01'}]));
+  await Promise.all(pending);
+  assert.equal(run('OVERVIEW'),null);assert.equal(run('SELECTED.size'),0);
+  assert.match(doc.getElementById('overviewArea').textContent,/No folders yet/);
+  assert.equal(doc.getElementById('savedSchedules').textContent,'');assert.equal(doc.getElementById('wkndSavedSchedules').textContent,'');dom.window.close();
+});
+
+test('weekend generate and save use API response data and retain the folder identity',async()=>{
+  const {doc,run,dom}=await admin();
+  const data={folderId:1,folderVersion:'2026-01-01',employees:[],assignments:[],rotating_counts:{},effective_pool:[]};
+  let saved;
+  dom.window.fetch=async(url,opts)=>{
+    if(url==='/api/generate_weekend')return {ok:true,status:200,json:async()=>data};
+    if(url==='/api/save_weekend'){saved=JSON.parse(opts.body);return {ok:true,status:200,json:async()=>({savedScheduleId:9})};}
+    return {ok:true,status:200,json:async()=>[]};
+  };
+  await doc.getElementById('wkndGenerateBtn').onclick();assert.equal(run('LAST_WKND_PREVIEW.folderId'),1);
+  await doc.getElementById('wkndSaveBtn').onclick();assert.equal(saved.snapshot.folderVersion,data.folderVersion);assert.equal(saved.folderId,1);
+  assert.match(doc.getElementById('wkndMsg').textContent,/Saved successfully/);
+  const stale=doc.getElementById('wkndSaveBtn').onclick;run('VIEW_REVISION++; FOLDER_ID=2; clearWeekendView()');saved=null;
+  await stale();assert.equal(saved,null);dom.window.close();
+});

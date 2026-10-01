@@ -34,7 +34,8 @@
       <div class="row"><button id="renameFolderBtn" class="secondary">Rename</button>
         <button id="activateFolderBtn" class="secondary">Accept submissions here</button>
         <button id="stopFolderBtn" class="secondary">Stop accepting submissions</button>
-        <button id="archiveFolderBtn" class="secondary">Archive / restore</button></div>
+        <button id="archiveFolderBtn" class="secondary">Archive / restore</button>
+        <button id="deleteFolderBtn" class="danger">Delete folder permanently</button></div>
       <p id="folderMsg" role="status"></p>
     </div>
     <div class="tabs">
@@ -195,6 +196,17 @@
   </div>
 </main>
 
+<dialog id="deleteFolderDialog" aria-labelledby="deleteFolderTitle" aria-describedby="deleteFolderDetails">
+  <h2 id="deleteFolderTitle">Delete folder permanently</h2>
+  <div id="deleteFolderDetails"></div>
+  <label for="deleteFolderConfirmation">Type the exact folder name to confirm</label>
+  <input id="deleteFolderConfirmation" autocomplete="off">
+  <p id="deleteFolderError" role="alert"></p>
+  <div class="row">
+    <button id="deleteFolderConfirmBtn" class="danger" disabled>Delete permanently</button>
+    <button id="deleteFolderCancelBtn" class="secondary">Cancel</button>
+  </div>
+</dialog>
 <script src="js/folders.js"></script>
 <script src="js/admin.js"></script>
 </body>
