@@ -9,7 +9,7 @@ let EMPLOYEES = [];
 let LAST_RESULT = null;
 let LAST_DIAG = null;
 
-const $ = (id) => document.getElementById(id);
+function $(id) { return document.getElementById(id); }
 
 function authHeaders() {
   return { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" };

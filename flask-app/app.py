@@ -358,6 +358,41 @@ def get_all_availability():
         submissions=[submission_json(r) for r in rows],
         missing=[e["name"] for e in employees if e["name"] not in availability])
 
+@app.put("/api/admin/availability")
+@require_admin
+def admin_update_availability():
+    data = body()
+    employee_id = data.get("employeeId")
+    folder_id = data.get("folderId")
+    availability = data.get("availability")
+    comment = data.get("comment", "")
+
+    if type(employee_id) is not int or type(folder_id) is not int:
+        abort(400, "Employee ID and Folder ID are required.")
+    if not isinstance(availability, dict):
+        abort(400, "Availability must be an object.")
+    if not isinstance(comment, str) or len(comment) > 99:
+        abort(400, "Comments must be shorter than 100 characters.")
+
+    with write_transaction():
+        folder = folder_or_404(folder_id)
+        employee = Employee.get_or_none(Employee.id == employee_id)
+        if not employee:
+            abort(404, "Employee not found.")
+
+        cfg = get_config()
+        valid = {f"{d}_{h:02d}" for d in cfg['availabilityDays'] for h in range(cfg["hourStart"], cfg["hourEnd"] + 1)}
+        if any(k not in valid or (type(v) not in (int, bool) or v not in (0, 1, 2)) for k, v in availability.items()):
+            abort(400, "Invalid availability time slot.")
+
+        row, _ = FolderAvailability.get_or_create(employee=employee, folder=folder)
+        row.data_json = json.dumps(availability)
+        row.comment = comment
+        row.submitted_at = datetime.datetime.utcnow()
+        row.save()
+
+    return jsonify(ok=True)
+
 # ---------------- diagnostics ----------------
 def _load_inputs(folder_id, ids=None):
     folder_or_404(folder_id)
