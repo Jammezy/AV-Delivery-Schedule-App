@@ -5,6 +5,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  checks: write
 jobs:
   regression:
     runs-on: ubuntu-latest
@@ -34,12 +35,31 @@ jobs:
       - run: pip install -r requirements.txt
       - run: npm install --no-save jsdom@30.1.0 exceljs@4.4.0 playwright@1.58.2
       - run: npx playwright install --with-deps chromium
-      - run: python -m unittest -v test_app
-      - run: node test_frontend.cjs
-      - run: python test_postgres.py
+      - run: python -m unittest -v test_app 2>&1 | tee test-backend.log
+        if: ${{ !cancelled() }}
+      - run: node test_frontend.cjs 2>&1 | tee test-frontend.log
+        if: ${{ !cancelled() }}
+      - run: python test_postgres.py 2>&1 | tee test-postgres.log
+        if: ${{ !cancelled() }}
         env:
           TEST_POSTGRES_PORT: ${{ job.services.postgres.ports[5432] }}
-      - run: node test_deletion_browser.cjs
+      - run: node test_deletion_browser.cjs 2>&1 | tee test-browser.log
+        if: ${{ !cancelled() }}
+      - uses: actions/github-script@v7
+        if: always()
+        with:
+          script: |
+            const fs = require('fs');
+            let summary = '';
+            for (const kind of ['backend','frontend','postgres','browser']) {
+              const path = `flask-app/test-${kind}.log`;
+              if (fs.existsSync(path)) summary += `### ${kind}\n\n\`\`\`text\n${fs.readFileSync(path,'utf8').slice(-13000)}\n\`\`\`\n\n`;
+            }
+            const ref = context.payload.pull_request?.head.sha || context.sha;
+            const {data} = await github.rest.checks.listForRef({...context.repo,ref});
+            const check = data.check_runs.filter(c=>c.name==='regression' && c.app.slug==='github-actions').sort((a,b)=>b.id-a.id)[0];
+            if (check) await github.rest.checks.update({...context.repo,check_run_id:check.id,
+              output:{title:'Disposable database and browser test logs',summary:summary.slice(-60000)}});
       - uses: actions/upload-artifact@v4
         if: always()
         with:

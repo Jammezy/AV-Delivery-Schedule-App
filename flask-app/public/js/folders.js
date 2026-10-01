@@ -19,7 +19,7 @@ function renderFolderControls() {
   for (const id of ["renameFolderBtn", "activateFolderBtn", "stopFolderBtn", "archiveFolderBtn", "deleteFolderBtn", "generateBtn", "regenerateBtn", "wkndGenerateBtn"]) {
     $(id).disabled = !FOLDER_ID || DELETION_BUSY;
   }
-  $("downloadBtn").disabled = DELETION_BUSY || !LAST_RESULT;
+  $("downloadBtn").disabled = DELETION_BUSY || !FOLDER_ID;
   const active = FOLDERS.find(f => f.id === ACTIVE_FOLDER);
   $("folderStatus").textContent = active ? `Accepting submissions: ${active.name}` : "No folder is accepting submissions.";
 }
