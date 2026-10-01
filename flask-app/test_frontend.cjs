@@ -4,6 +4,93 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const {JSDOM} = require('jsdom');
 const ExcelJS = require('exceljs');
+
+async function planningAdmin() {
+  const {dom, run, doc} = await admin();
+  let roster = [{id:1,name:'Alex',minHours:20,maxHours:100,isLead:false}];
+  let required = 50, failSave = false, failLoad = false;
+  const alerts = [];
+  dom.window.alert = message => alerts.push(message);
+  dom.window.confirm = () => true;
+  dom.window.fetch = async (url, options = {}) => {
+    if (url === '/api/staffing-plan') {
+      if (failLoad) throw new Error('offline');
+      const allotted = roster.reduce((sum,e)=>sum+e.minHours,0);
+      return {ok:true,json:async()=>({employees:structuredClone(roster),requiredHours:required,allottedHours:allotted,remainingHours:required-allotted})};
+    }
+    if (url.startsWith('/api/employees/')) {
+      if (failSave) return {ok:false,json:async()=>({error:'Save failed'})};
+      const name = decodeURIComponent(url.split('/').pop());
+      if (options.method === 'DELETE') roster = roster.filter(e=>e.name!==name);
+      else {
+        const data = JSON.parse(options.body), existing = roster.find(e=>e.name===name);
+        const employee = {...data,name,id:existing?.id||2,minHours:Number(data.minHours),maxHours:Number(data.maxHours)};
+        if (existing) Object.assign(existing,employee); else roster.push(employee);
+      }
+      return {ok:true,json:async()=>({})};
+    }
+    throw new Error('Unexpected request: '+url);
+  };
+  run('FOLDER_ID=null');
+  await run('renderEmployees()');
+  return {dom,run,doc,alerts,setFailSave:v=>failSave=v,setFailLoad:v=>failLoad=v,setRequired:v=>required=v};
+}
+
+test('planning totals preview, save, failure, invalid input and tab reload stay consistent',async()=>{
+  const t = await planningAdmin(), {dom,run,doc} = t;
+  const text = () => doc.getElementById('employeesStaffingPlan').textContent;
+  const edit = value => {
+    const input = doc.querySelector('[data-field="minHours"]');
+    input.value=value; input.dispatchEvent(new dom.window.Event('input'));
+  };
+  assert.match(text(),/30 hours remaining/);
+  edit('50'); assert.match(text(),/Unsaved preview/); assert.match(text(),/minimum hours match demand/);
+  edit('65'); assert.match(text(),/−15/);
+  assert.equal(doc.getElementById('diagnosticsStaffingPlan').innerHTML,doc.getElementById('employeesStaffingPlan').innerHTML);
+  await run('renderEmployees()'); assert.equal(doc.querySelector('[data-field="minHours"]').value,'65');
+  t.setFailSave(true); await doc.querySelector('[data-action="save"]').onclick();
+  assert.match(text(),/Unsaved preview/); assert.deepEqual(t.alerts,['Save failed']);
+  t.setFailSave(false); await doc.querySelector('[data-action="save"]').onclick();
+  assert.match(text(),/Saved totals/); assert.match(text(),/−15/);
+  await run('renderEmployees()'); assert.equal(doc.querySelector('[data-field="minHours"]').value,'65');
+  for (const invalid of ['', '-1', '1.5', '101']) {
+    edit(invalid); assert.match(text(),/Unsaved input is invalid/);
+    await doc.querySelector('[data-action="save"]').onclick();
+    assert.equal(run('STAFFING_PLAN.allottedHours'),65);
+  }
+  edit('0'); await doc.querySelector('[data-action="save"]').onclick();
+  assert.match(text(),/50 hours remaining/);
+  t.setRequired(60); await run('refreshDiagnostics()'); assert.match(text(),/60 hours remaining/);
+  doc.getElementById('newEmpName').value='Blair'; await doc.getElementById('addEmpBtn').onclick();
+  assert.equal(run('STAFFING_PLAN.employees.length'),2);
+  await doc.querySelector('[data-action="delete"]').onclick();
+  await doc.querySelector('[data-action="delete"]').onclick();
+  assert.equal(run('STAFFING_PLAN.allottedHours'),0); assert.match(text(),/60 hours remaining/);
+  dom.window.close();
+});
+
+test('planning loading, errors, out-of-order requests and logout never show stale totals',async()=>{
+  const t=await planningAdmin(), {dom,run,doc}=t;
+  t.setFailLoad(true); await run('refreshStaffingPlan()');
+  assert.match(doc.getElementById('employeesStaffingPlan').textContent,/Could not load/);
+  const resolvers=[]; dom.window.fetch=()=>new Promise(resolve=>resolvers.push(resolve));
+  const older=run('refreshStaffingPlan()'), newer=run('refreshStaffingPlan()');
+  assert.match(doc.getElementById('employeesStaffingPlan').textContent,/Loading/);
+  const reply = remaining => ({ok:true,json:async()=>({employees:[],allottedHours:0,requiredHours:remaining,remainingHours:remaining})});
+  resolvers[1](reply(90)); await newer; resolvers[0](reply(80)); await older;
+  assert.equal(run('STAFFING_PLAN.remainingHours'),90);
+  const oldFolder=run('refreshStaffingPlan()'); run('VIEW_REVISION++; FOLDER_ID=42; SELECTED=new Set([999])');
+  const newFolder=run('refreshStaffingPlan()');
+  resolvers[3](reply(90)); await newFolder;
+  resolvers[2](reply(10)); await oldFolder;
+  assert.equal(run('STAFFING_PLAN.remainingHours'),90);
+  const pending=run('refreshStaffingPlan()'); run('clearSession()');
+  resolvers[4](reply(70)); await pending;
+  assert.equal(doc.getElementById('employeesStaffingPlan').textContent,'');
+  assert.equal(doc.getElementById('diagnosticsStaffingPlan').textContent,'');
+  assert.equal(run('EMPLOYEE_DRAFTS.size'),0);
+  dom.window.close();
+});
 const config = {days:['Mon','Tue','Wed','Thu','Fri'], availabilityDays:['Mon','Tue','Wed','Thu','Fri','Sat','Sun'],hourStart:7,hourEnd:8,reqStaffOpen:1,reqStaffLate:1,slotNames:['DLA'],minShiftLength:1};
 const overview = {employees:[{id:1,name:'Alex'},{id:2,name:'Blair'},{id:3,name:'Casey'}],availability:{Alex:{Mon_07:2,Sat_07:1,Sun_08:1},Blair:{Mon_07:1,Invalid_99:1},Casey:{}},missing:['Missing'],comments:{Blair:'<img src=x onerror=alert(1)>'},submittedAt:{Alex:'2026-01-01T00:00:00Z',Blair:'2026-01-01T00:00:00Z'}};
 async function admin() {

@@ -8,6 +8,55 @@ let CONFIG = null;
 let EMPLOYEES = [];
 let LAST_RESULT = null;
 let LAST_DIAG = null;
+let STAFFING_PLAN = null, PLAN_REQUEST = 0, PLAN_STATUS = "";
+const EMPLOYEE_DRAFTS = new Map();
+
+function renderStaffingPlan() {
+  let html = `<h3>Weekly hours remaining</h3>`;
+  if (!STAFFING_PLAN || PLAN_STATUS) {
+    html += `<p>${escapeHtml(PLAN_STATUS || "Loading staffing totals…")}</p>`;
+  } else {
+    let allotted = STAFFING_PLAN.allottedHours, preview = false, invalid = false;
+    for (const employee of STAFFING_PLAN.employees) {
+      const draft = EMPLOYEE_DRAFTS.get(employee.name);
+      if (!draft || String(employee.minHours) === draft.minHours) continue;
+      preview = true;
+      const min = Number(draft.minHours), max = Number(draft.maxHours);
+      if (draft.minHours.trim() === "" || !Number.isSafeInteger(min) || min < 0 ||
+          draft.maxHours.trim() === "" || !Number.isSafeInteger(max) || min > max) {
+        invalid = true; continue;
+      }
+      allotted += min - employee.minHours;
+    }
+    const remaining = STAFFING_PLAN.requiredHours - allotted;
+    const status = remaining > 0 ? `${remaining} hours remaining` : remaining === 0
+      ? "0 — minimum hours match demand" : `−${Math.abs(remaining)} — minimum hours exceed demand by ${Math.abs(remaining)}`;
+    html += `<p>Based on all roster employees’ minimum weekly hours.</p>`;
+    if (invalid) {
+      html += `<p class="msg err">Unsaved input is invalid. Enter nonnegative whole hours with minimum no greater than maximum. Saved remaining hours: ${STAFFING_PLAN.remainingHours}.</p>`;
+    } else {
+      html += `<p><strong>${preview ? "Unsaved preview" : "Saved totals"}</strong></p>
+        <div class="stat-strip">
+          <div class="stat"><div class="n">${STAFFING_PLAN.requiredHours}</div><div class="k">Required weekly staff-hours</div></div>
+          <div class="stat"><div class="n">${allotted}</div><div class="k">Total minimum hours allotted</div></div>
+        </div><p class="planning-balance"><strong>${status}</strong></p>`;
+    }
+    html += `<p class="hint">Matching total hours does not guarantee individual shift coverage. Check availability, leads, and scheduling rules below or in Week check.</p>`;
+  }
+  for (const id of ["diagnosticsStaffingPlan", "employeesStaffingPlan"]) $(id).innerHTML = html;
+}
+
+async function refreshStaffingPlan() {
+  const request = ++PLAN_REQUEST, revision = VIEW_REVISION;
+  PLAN_STATUS = "Loading staffing totals…";
+  renderStaffingPlan();
+  const plan = await apiGet("/api/staffing-plan");
+  if (!TOKEN || request !== PLAN_REQUEST || revision !== VIEW_REVISION) return null;
+  STAFFING_PLAN = plan;
+  PLAN_STATUS = plan ? "" : "Could not load staffing totals. Re-check or reopen Employees to retry.";
+  renderStaffingPlan();
+  return plan;
+}
 
 function $(id) { return document.getElementById(id); }
 
@@ -64,6 +113,8 @@ function isClosed(day, h, cfg = CONFIG) {
 
 // ---------------- auth ----------------
 function clearSession() {
+  STAFFING_PLAN = null; PLAN_REQUEST++; PLAN_STATUS = ""; EMPLOYEE_DRAFTS.clear();
+  $("diagnosticsStaffingPlan").innerHTML = $("employeesStaffingPlan").innerHTML = "";
   TOKEN = null; CONFIG = null; EMPLOYEES = []; LAST_DIAG = null;
   FOLDERS = []; FOLDER_ID = ACTIVE_FOLDER = null; SELECTED.clear(); OVERVIEW = null;
   PINNED = PREVIEWED = null; VIEW_REVISION++;
@@ -116,9 +167,9 @@ function setupTabs() {
 
 // ---------------- employees ----------------
 async function renderEmployees() {
-  const employees = await apiGet("/api/employees");
-  if (!employees) return;
-  EMPLOYEES = employees;
+  const plan = await refreshStaffingPlan();
+  if (!plan) return;
+  EMPLOYEES = plan.employees;
   const wrap = $("employeeTableWrap");
   if (!EMPLOYEES.length) {
     wrap.innerHTML = `<p class="hint">Nobody yet. Add someone above, or wait for the first submission.</p>`;
@@ -142,23 +193,46 @@ async function renderEmployees() {
 
   wrap.querySelectorAll("tbody tr").forEach((tr) => {
     const name = tr.dataset.name;
+    const inputs = [...tr.querySelectorAll("input")];
+    const draft = EMPLOYEE_DRAFTS.get(name);
+    if (draft) for (const input of inputs) {
+      if (input.type === "checkbox") input.checked = draft[input.dataset.field];
+      else input.value = draft[input.dataset.field];
+    }
+    for (const input of inputs) input.oninput = () => {
+      EMPLOYEE_DRAFTS.set(name, Object.fromEntries(inputs.map(el =>
+        [el.dataset.field, el.type === "checkbox" ? el.checked : el.value])));
+      renderStaffingPlan();
+    };
     tr.querySelector('[data-action="save"]').onclick = async () => {
+      const minimum = tr.querySelector('[data-field="minHours"]');
+      const maximum = tr.querySelector('[data-field="maxHours"]');
+      if (![minimum, maximum].every(input => input.value.trim() !== "" && Number.isSafeInteger(Number(input.value)) && Number(input.value) >= 0) || Number(minimum.value) > Number(maximum.value)) {
+        alert("Enter nonnegative whole hours with minimum no greater than maximum."); return;
+      }
+      const revision = VIEW_REVISION, token = TOKEN;
+      const controls = [...tr.querySelectorAll("input, button")];
+      controls.forEach(el => el.disabled = true);
       const r = await apiSend(`/api/employees/${encodeURIComponent(name)}`, "PUT", {
         isLead: tr.querySelector('[data-field="isLead"]').checked,
         minHours: tr.querySelector('[data-field="minHours"]').value,
         maxHours: tr.querySelector('[data-field="maxHours"]').value,
       });
-      if (r && !r.ok) { alert(r.data.error || "Couldn't save."); return; }
+      controls.forEach(el => el.disabled = false);
+      if (!TOKEN || TOKEN !== token || revision !== VIEW_REVISION || !r) return;
+      if (!r.ok) { alert(r.data.error || "Couldn't save."); return; }
+      EMPLOYEE_DRAFTS.delete(name);
       tr.style.background = "#e6f4ea";
       setTimeout(() => (tr.style.background = ""), 700);
-      refreshDiagnostics();
+      await refreshDiagnostics();
     };
     tr.querySelector('[data-action="delete"]').onclick = async () => {
       if (!confirm(`Remove ${name} and their submitted availability?`)) return;
       const result = await apiSend(`/api/employees/${encodeURIComponent(name)}`, "DELETE");
       if (!result?.ok) { if (result) alert(result.data.error); return; }
-      renderEmployees();
-      refreshDiagnostics();
+      EMPLOYEE_DRAFTS.delete(name);
+      await renderEmployees();
+      await refreshDiagnostics();
     };
   });
 }
@@ -357,6 +431,8 @@ function renderDiagnostics(payload) {
 }
 
 async function refreshDiagnostics() {
+  await refreshStaffingPlan();
+  if (!TOKEN || !FOLDER_ID) return;
   const payload = await apiGet(`/api/diagnostics?${selectionQuery()}`);
   if (!payload) return;
   CONFIG = payload.config;
@@ -589,11 +665,12 @@ $("refreshDiagBtn").onclick = refreshDiagnostics;
 $("addEmpBtn").onclick = async () => {
   const name = $("newEmpName").value.trim();
   if (!name) return;
-  await apiSend(`/api/employees/${encodeURIComponent(name)}`, "PUT",
+  const result = await apiSend(`/api/employees/${encodeURIComponent(name)}`, "PUT",
     { isLead: false, minHours: 0, maxHours: 40 });
+  if (!result?.ok) { if (result) alert(result.data.error || "Couldn't add employee."); return; }
   $("newEmpName").value = "";
-  renderEmployees();
-  refreshDiagnostics();
+  await renderEmployees();
+  await refreshDiagnostics();
 };
 
 if (TOKEN) {
