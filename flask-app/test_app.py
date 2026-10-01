@@ -24,6 +24,42 @@ from backup_db import backup
 
 
 class AppTests(unittest.TestCase):
+    def test_staffing_plan_scope_and_saved_changes(self):
+        self.assertEqual(self.client.get('/api/staffing-plan').status_code, 401)
+        def plan(query=''):
+            return self.client.get('/api/staffing-plan' + query, headers=self.headers).json
+        empty = plan()
+        # Defaults: Mon–Thu 12*4 + 3*2; Fri 12*4 = 264 staff-hours.
+        self.assertEqual((empty['requiredHours'], empty['allottedHours'], empty['remainingHours']), (264, 0, 264))
+        for minimum, remaining in [(150, 114), (264, 0), (279, -15), (0, 264)]:
+            response = self.client.put('/api/employees/Alex', headers=self.headers,
+                json={'minHours': minimum, 'maxHours': 300})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(plan()['remainingHours'], remaining)
+            self.assertEqual(plan('?folderId=999&selection=1&employeeId=999'), plan())
+        self.client.delete('/api/employees/Alex', headers=self.headers)
+        self.assertEqual(plan(), empty)
+
+    def test_staffing_plan_closing_rules_and_validation(self):
+        from models import save_config
+        with db.connection_context():
+            _, errors = save_config({'hourStart': 7, 'hourEnd': 10,
+                'lateHourStart': 9, 'reqStaffOpen': 4, 'reqStaffLate': 2,
+                'fridayCloseHour': 9, 'dayCloseHours': {'Mon': 8},
+                'minShiftLength': 1, 'maxShiftLength': 4})
+            self.assertFalse(errors)
+        result = self.client.get('/api/staffing-plan', headers=self.headers).json
+        # Monday 4, Tue–Thu 12 each, Friday 8; hour 10 is included.
+        self.assertEqual(result['requiredHours'], 48)
+        for value in [-1, 1.5, '1.5', '', None, True, 'bad']:
+            response = self.client.put('/api/employees/Invalid', headers=self.headers,
+                json={'minHours': value, 'maxHours': 40})
+            self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.client.get('/api/employees', headers=self.headers).json, [])
+        response = self.client.put('/api/employees/Zero', headers=self.headers,
+            json={'minHours': '0', 'maxHours': '0'})
+        self.assertEqual(response.json['maxHours'], 0)
+
     def setUp(self):
         db.close()
         self.path = TEST_DIR / (self._testMethodName + ".db")

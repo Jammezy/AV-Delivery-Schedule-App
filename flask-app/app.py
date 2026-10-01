@@ -202,19 +202,40 @@ def list_employees():
     return jsonify([serialize(e) for e in Employee.select().order_by(Employee.name)])
 
 
+@app.get("/api/staffing-plan")
+@require_admin
+def staffing_plan():
+    """Roster-wide planning, independent of submissions and generation selection."""
+    cfg = get_config()
+    employees = [serialize(e) for e in Employee.select().order_by(Employee.name)]
+    required = sum(solver_module.required_staff(day, hour, cfg)
+                   for day in cfg["days"] for hour in solver_module.hours_of(cfg))
+    allotted = sum(e["minHours"] for e in employees)
+    return jsonify(requiredHours=required, allottedHours=allotted,
+                   remainingHours=required - allotted, employees=employees)
+
+
 @app.put("/api/employees/<path:name>")
 @require_admin
 def upsert_employee(name):
     name = resolve_name(name)
     if not name:
         return jsonify({"error": "A name is required."}), 400
-    data = request.get_json(silent=True) or {}
+    data = body()
+    values = []
+    for key, default in (("minHours", 0), ("maxHours", 40)):
+        raw = data.get(key, default)
+        if type(raw) is int and raw >= 0:
+            values.append(raw)
+        elif isinstance(raw, str) and re.fullmatch(r"[0-9]+", raw):
+            values.append(int(raw))
+        else:
+            return jsonify(error="Hours must be nonnegative whole numbers."), 400
+    if values[0] > values[1]:
+        return jsonify({"error": "Minimum hours can't exceed maximum hours."}), 400
     emp, _ = Employee.get_or_create(name=name)
     emp.is_lead = bool(data.get("isLead"))
-    emp.min_hours = max(0, int(data.get("minHours") or 0))
-    emp.max_hours = max(0, int(data.get("maxHours") or 40))
-    if emp.min_hours > emp.max_hours:
-        return jsonify({"error": "Minimum hours can't exceed maximum hours."}), 400
+    emp.min_hours, emp.max_hours = values
     emp.save()
     return jsonify(serialize(emp))
 

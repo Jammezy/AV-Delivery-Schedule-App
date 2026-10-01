@@ -48,6 +48,7 @@
 
     <section id="tab-diagnostics" class="card">
       <h2>Can this week be scheduled?</h2>
+      <div id="diagnosticsStaffingPlan" class="staffing-plan" role="status" aria-live="polite"></div>
       <p class="hint">Everything below is arithmetic on what people submitted — no solver
         run needed. Blockers make a schedule provably impossible; squeezes are the places
         with no room left to maneuver.</p>
@@ -137,6 +138,7 @@
 
     <section id="tab-employees" class="card" style="display:none;">
       <h2>Employee roster</h2>
+      <div id="employeesStaffingPlan" class="staffing-plan" role="status" aria-live="polite"></div>
       <p class="hint">Set who's a lead and their weekly hour targets. People are added
         automatically the first time they submit, unless you turn that off in Settings.</p>
       <div class="row" style="margin-bottom:12px;">
