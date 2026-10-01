@@ -21,10 +21,14 @@ with db.connection_context(), write_transaction():
     for folder in [target, other]:
         for employee in employees:
             FolderAvailability.create(folder=folder, employee=employee, data_json='{"Mon_07":2,"Sat_07":1}', comment='Disposable comment')
-        result = {'config':cfg, 'employees':[], 'fairness':[], 'schedule':{day:{} for day in cfg['days']}, 'work':{day:{h:[] for h in range(cfg['hourStart'],cfg['hourEnd']+1)} for day in cfg['days']}}
+        result = {'config':cfg, 'employees':[app.serialize(e) for e in employees], 'fairness':[], 'schedule':{day:{7:{'DLA':'Alex'}} for day in cfg['days']}, 'work':{day:{h:[] for h in range(cfg['hourStart'],cfg['hourEnd']+1)} for day in cfg['days']}}
         SavedSchedule.create(folder=folder, snapshot_json=json.dumps({'result':result}))
         SavedWeekendSchedule.create(folder=folder, snapshot_json=json.dumps({'folderId':folder.id,
-            'folderVersion':folder.created_at.isoformat(), 'employees':[], 'assignments':[], 'rotating_counts':{}, 'effective_pool':[]}))
+            'folderVersion':folder.created_at.isoformat(), 'employees':[app.serialize(e) for e in employees],
+            'assignments':[
+                {'friday':'2026-09-04','date':'2026-09-04','shift':{'key':'friday_evening'},'assigned':employees[0].id,'origin':'fixed'},
+                {'friday':'2026-09-04','date':'2026-09-06','shift':{'key':'sunday_afternoon'},'assigned':employees[1].id,'origin':'rotating'}],
+            'rotating_counts':{employees[1].id:1}, 'effective_pool':[employees[1].id]}))
 print(json.dumps({'target':target.id, 'other':other.id}))
 `;
 async function check(viewport) {
@@ -54,6 +58,8 @@ async function check(viewport) {
     await page.locator('[data-tab=weekend]').click();
     await page.locator('#wkndSavedSchedules button').first().click();
     await page.locator('#wkndPreviewArea table').first().waitFor();
+    assert.match(await page.locator('#wkndPreviewArea').textContent(),/friday_evening/);
+    assert.match(await page.locator('#wkndPreviewArea').textContent(),/sunday_afternoon/);
     await page.locator('#deleteFolderBtn').click();
     await page.locator('#deleteFolderDetails').getByText('Disposable Fall <2026>',{exact:true}).waitFor();
     const text=await page.locator('#deleteFolderDetails').textContent();
