@@ -100,6 +100,24 @@ someone asks why they got the Thursday open.
 
 ## The week check
 
+The **Weekly hours remaining** panel appears in both Week check and Employees.
+It subtracts every roster employee's saved minimum weekly hours from weekday
+staff-hours required by the current scheduling settings. For example, 200 required
+minus 215 allotted displays **−15**, rather than clamping to zero. It includes
+employees without submissions and is independent of the viewed folder and the
+Generate selection; the existing Week check diagnostics still use that selection.
+
+Editing minimum hours shows an **Unsaved preview** in both panels. Save each row
+to commit it; failed saves retain the draft. Invalid minimum inputs suppress the
+preview and show the saved balance. A matching total is a planning aid, not proof
+that availability, lead coverage, and shift rules permit a schedule. The counter
+does not change solver rules, saved schedules, or weekend generation.
+
+The admin-only `GET /api/staffing-plan` endpoint returns `requiredHours`,
+`allottedHours`, `remainingHours`, and the full `employees` roster. Demand uses
+the solver's existing hourly staffing helpers, including closing times. No
+database migration is required.
+
 Three heatmaps and two lists, all computed by arithmetic before the solver runs:
 
 - **Coverage** — people free vs. people needed, per hour. Red means provably

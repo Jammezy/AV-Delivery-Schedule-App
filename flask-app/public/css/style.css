@@ -299,3 +299,7 @@ button:focus-visible, select:focus-visible, textarea:focus-visible { outline:3px
 #folderSelect { max-width:100%; padding:8px; }
 #commentInput { width:100%; box-sizing:border-box; }
 @media (max-width:700px) { .availability-viewer { grid-template-columns:1fr; } .viewer-list { max-height:180px; } }
+.staffing-plan { margin: 16px 0; padding: 16px; border: 1px solid #ccd4dc; border-radius: 8px; }
+.staffing-plan .stat-strip { display: flex; flex-wrap: wrap; gap: 12px; }
+.staffing-plan .stat { flex: 1 1 160px; min-width: 0; }
+.planning-balance { font-size: 1.25rem; overflow-wrap: anywhere; }
