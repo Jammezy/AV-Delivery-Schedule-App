@@ -23,7 +23,10 @@ from models import (db, init_db, Employee, Folder, FolderAvailability,
 from backup_db import backup
 
 
-class AppTests(unittest.TestCase):
+from test_folder_deletion import FolderDeletionTests
+
+
+class AppTests(FolderDeletionTests, unittest.TestCase):
     def test_staffing_plan_scope_and_saved_changes(self):
         self.assertEqual(self.client.get('/api/staffing-plan').status_code, 401)
         def plan(query=''):
