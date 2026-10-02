@@ -13,32 +13,58 @@ function clearResult() {
   for (const id of ["generateMsg", "scheduleOutput", "fairnessOutput"]) $(id).innerHTML = "";
   $("downloadBtn").style.display = $("regenerateBtn").style.display = "none";
 }
+function renderFolderControls() {
+  $("folderSelect").innerHTML = FOLDERS.length ? FOLDERS.map(f => `<option value="${f.id}" ${f.id === FOLDER_ID ? "selected" : ""}>${escapeHtml(f.name)}${f.archived ? " (archived)" : ""}</option>`).join("") : '<option value="">No folders yet</option>';
+  $("folderSelect").disabled = !FOLDERS.length;
+  for (const id of ["renameFolderBtn", "activateFolderBtn", "stopFolderBtn", "archiveFolderBtn", "deleteFolderBtn", "generateBtn", "regenerateBtn", "wkndGenerateBtn"]) {
+    $(id).disabled = !FOLDER_ID || DELETION_BUSY;
+  }
+  $("downloadBtn").disabled = DELETION_BUSY || !FOLDER_ID;
+  const active = FOLDERS.find(f => f.id === ACTIVE_FOLDER);
+  $("folderStatus").textContent = active ? `Accepting submissions: ${active.name}` : "No folder is accepting submissions.";
+}
+function clearFolderView() {
+  VIEW_REVISION++;
+  PINNED = PREVIEWED = null;
+  SELECTED = new Set(); OVERVIEW = null; LAST_DIAG = null;
+  clearResult(); clearWeekendView(); closeEditAvailabilityModal();
+  editAvailState = {};
+  for (const id of ["diagArea", "overviewArea", "generatorSelection", "savedSchedules", "diagBadge", "editAvailGrid", "editAvailMsg", "editAvailName"]) $(id).innerHTML = "";
+  $("editAvailComment").value = "";
+}
 async function loadFolders(preferred = FOLDER_ID) {
   const data = await apiGet("/api/folders");
   if (!data) return;
   FOLDERS = data.folders; ACTIVE_FOLDER = data.activeFolderId;
-  FOLDER_ID = FOLDERS.some(f => f.id === preferred) ? preferred : (ACTIVE_FOLDER || FOLDERS[0]?.id);
-  $("folderSelect").innerHTML = FOLDERS.map(f => `<option value="${f.id}" ${f.id === FOLDER_ID ? "selected" : ""}>${escapeHtml(f.name)}${f.archived ? " (archived)" : ""}</option>`).join("");
-  const active = FOLDERS.find(f => f.id === ACTIVE_FOLDER);
-  $("folderStatus").textContent = active ? `Accepting submissions: ${active.name}` : "No folder is accepting submissions.";
+  FOLDER_ID = FOLDERS.some(f => f.id === preferred) ? preferred : (FOLDERS[0]?.id ?? null);
+  renderFolderControls();
   await changeFolder();
 }
 async function changeFolder() {
-  FOLDER_ID = Number($("folderSelect").value);
-  VIEW_REVISION++;
-  PINNED = PREVIEWED = null;
-  SELECTED = new Set(); OVERVIEW = null;
-  clearResult();
-  $("diagArea").innerHTML = $("overviewArea").innerHTML = $("generatorSelection").innerHTML = $("savedSchedules").innerHTML = "";
+  cancelFolderDeletion();
+  FOLDER_ID = $("folderSelect").value ? Number($("folderSelect").value) : null;
+  clearFolderView(); renderFolderControls();
+  const revision = VIEW_REVISION;
+  if (!FOLDER_ID) {
+    $("overviewArea").textContent = "No folders yet. Create a folder to collect availability.";
+    $("diagArea").textContent = "Create or select a folder to check availability.";
+    await refreshStaffingPlan();
+    return;
+  }
   await renderOverview(true);
+  if (revision !== VIEW_REVISION) return;
   await refreshDiagnostics();
+  if (revision !== VIEW_REVISION) return;
   await loadSavedSchedules();
+  if (revision !== VIEW_REVISION) return;
+  await renderSavedWeekendSchedules();
 }
 function validAvailability(av) {
   const valid = new Set(CONFIG.availabilityDays.flatMap(d => hours().map(h => `${d}_${String(h).padStart(2, "0")}`)));
   return Object.fromEntries(Object.entries(av || {}).filter(([k,v]) => valid.has(k) && Number(v) > 0));
 }
 async function renderFolderOverview(reset = false) {
+  if (!FOLDER_ID) return;
   const revision = VIEW_REVISION;
   const data = await apiGet(`/api/availability?${folderQuery()}`);
   if (!data || revision !== VIEW_REVISION) return;
@@ -244,8 +270,10 @@ $("editAvailSaveBtn").onclick = async () => {
     comment: $("editAvailComment").value
   };
 
+  const revision = VIEW_REVISION;
   const r = await apiSend("/api/admin/availability", "PUT", payload);
   $("editAvailSaveBtn").disabled = false;
+  if (revision !== VIEW_REVISION) return;
   if (!r) {
     $("editAvailMsg").innerHTML = `<span style="color:var(--danger)">Network error saving availability.</span>`;
     return;
@@ -262,13 +290,14 @@ $("editAvailSaveBtn").onclick = async () => {
 // ---------------------------------
 
 async function loadSavedSchedules() {
-  const revision = VIEW_REVISION;
-  const rows = await apiGet(`/api/folders/${FOLDER_ID}/schedules`);
+  if (!FOLDER_ID) return;
+  const revision = VIEW_REVISION, folderId = FOLDER_ID;
+  const rows = await apiGet(`/api/folders/${folderId}/schedules`);
   if (!rows || revision !== VIEW_REVISION) return;
   $("savedSchedules").innerHTML = rows.length ? rows.map(s => `<div class="row"><span>${escapeHtml(new Date(s.createdAt).toLocaleString())}</span><button data-open="${s.id}" class="secondary">Open</button><button data-delete="${s.id}" class="danger">Delete</button></div>`).join("") : "No saved schedules yet.";
   $("savedSchedules").querySelectorAll("[data-open]").forEach(btn => btn.onclick = async () => {
-    const revision = VIEW_REVISION;
-    const saved = await apiGet(`/api/folders/${FOLDER_ID}/schedules/${btn.dataset.open}`);
+    if (revision !== VIEW_REVISION || folderId !== FOLDER_ID) return;
+    const saved = await apiGet(`/api/folders/${folderId}/schedules/${btn.dataset.open}`);
     if (!saved || revision !== VIEW_REVISION) return;
     LAST_RESULT = saved.result;
     $("scheduleOutput").innerHTML = renderPrintableTable(LAST_RESULT.schedule, LAST_RESULT.config);
@@ -277,13 +306,19 @@ async function loadSavedSchedules() {
     $("downloadBtn").style.display = "inline-block";
   });
   $("savedSchedules").querySelectorAll("[data-delete]").forEach(btn => btn.onclick = async () => {
+    if (revision !== VIEW_REVISION || folderId !== FOLDER_ID) return;
     if (!confirm("Delete this saved schedule? Employee availability will be kept.")) return;
-    const r = await apiSend(`/api/folders/${FOLDER_ID}/schedules/${btn.dataset.delete}`, "DELETE", {confirm:true});
+    const r = await apiSend(`/api/folders/${folderId}/schedules/${btn.dataset.delete}`, "DELETE", {confirm:true});
     if (r?.ok) { clearResult(); await loadSavedSchedules(); }
   });
 }
 function setupFolders() {
   $("folderSelect").onchange = changeFolder;
+  $("deleteFolderBtn").onclick = openFolderDeletion;
+  $("deleteFolderCancelBtn").onclick = cancelFolderDeletion;
+  $("deleteFolderConfirmBtn").onclick = confirmFolderDeletion;
+  $("deleteFolderConfirmation").oninput = updateDeletionConfirmation;
+  $("deleteFolderDialog").addEventListener("cancel", event => { event.preventDefault(); cancelFolderDeletion(); });
   $("logoutBtn").onclick = logout;
   const update = async data => {
     const r = await apiSend(`/api/folders/${FOLDER_ID}`, "PATCH", data);
@@ -303,4 +338,85 @@ function setupFolders() {
   $("archiveFolderBtn").onclick = () => update({archived:!FOLDERS.find(f => f.id === FOLDER_ID)?.archived});
   document.addEventListener("click", e => { if (!e.target.closest("#overviewArea")) { PINNED = PREVIEWED = null; drawViewer(); } });
   document.addEventListener("keydown", e => { if (e.key === "Escape") { PINNED = PREVIEWED = null; drawViewer(); } });
+}
+
+
+// A deletion request keeps its captured target even if the view changes.
+let DELETION_PREVIEW = null, DELETION_REQUEST = 0, DELETION_BUSY = false;
+function hideDeletionDialog() {
+  const dialog = $("deleteFolderDialog");
+  if (dialog.close) dialog.close(); else dialog.removeAttribute("open");
+}
+function cancelFolderDeletion() {
+  if (DELETION_BUSY) return;
+  DELETION_REQUEST++; DELETION_PREVIEW = null;
+  hideDeletionDialog();
+  $("deleteFolderConfirmation").value = "";
+}
+function updateDeletionConfirmation() {
+  $("deleteFolderConfirmBtn").disabled = DELETION_BUSY || !DELETION_PREVIEW ||
+    $("deleteFolderConfirmation").value !== DELETION_PREVIEW.folder.name;
+}
+async function openFolderDeletion() {
+  if (!FOLDER_ID || DELETION_BUSY) return;
+  const request = ++DELETION_REQUEST, folderId = FOLDER_ID;
+  DELETION_PREVIEW = null;
+  $("deleteFolderConfirmation").value = "";
+  $("deleteFolderError").textContent = "";
+  $("deleteFolderDetails").textContent = "Loading deletion counts…";
+  updateDeletionConfirmation();
+  const dialog = $("deleteFolderDialog");
+  if (!dialog.open) { if (dialog.showModal) dialog.showModal(); else dialog.setAttribute("open", ""); }
+  const preview = await apiGet(`/api/folders/${folderId}/deletion-preview`);
+  if (request !== DELETION_REQUEST || folderId !== FOLDER_ID) return;
+  if (!preview) { $("deleteFolderError").textContent = $("folderMsg").textContent || "Could not load the preview. Cancel and retry."; return; }
+  DELETION_PREVIEW = preview;
+  const c = preview.counts;
+  $("deleteFolderDetails").innerHTML = `<p>Folder: <strong>${escapeHtml(preview.folder.name)}</strong></p>
+    <ul><li>${c.availabilitySubmissions} availability submissions, including comments and submission timestamps</li>
+    <li>${c.weekdaySchedules} saved weekday schedules (Monday–Friday)</li>
+    <li>${c.weekendSchedules} saved weekend schedules (Friday evening–Sunday)</li></ul>
+    <p>Deletion is permanent and cannot be undone through the app.</p>
+    <p>Employee roster entries, minimum/maximum hours, lead designations, global settings, and other folders will be preserved.</p>
+    ${preview.acceptsSubmissions ? '<p>This folder currently accepts submissions. Deleting it also stops submissions here. No other folder will be activated.</p>' : ''}`;
+  updateDeletionConfirmation(); $("deleteFolderConfirmation").focus();
+}
+async function confirmFolderDeletion() {
+  if (DELETION_BUSY || !DELETION_PREVIEW || $("deleteFolderConfirmation").value !== DELETION_PREVIEW.folder.name) return;
+  const preview = DELETION_PREVIEW, token = TOKEN;
+  DELETION_BUSY = true; updateDeletionConfirmation(); renderFolderControls();
+  $("deleteFolderCancelBtn").disabled = $("deleteFolderConfirmation").disabled = true;
+  $("deleteFolderError").textContent = "Deleting…";
+  let response, data;
+  try {
+    response = await fetch(`/api/folders/${preview.folder.id}`, {method:"DELETE", headers:authHeaders(),
+      body:JSON.stringify({confirmationName:$("deleteFolderConfirmation").value, previewVersion:preview.previewVersion})});
+    data = await response.json();
+  } catch (_) { data = {error:"Connection failed. Deletion could not be confirmed. Please retry."}; }
+  DELETION_BUSY = false;
+  $("deleteFolderCancelBtn").disabled = $("deleteFolderConfirmation").disabled = false;
+  if (!TOKEN || TOKEN !== token) return;
+  renderFolderControls();
+  if (response?.status === 401) { clearSession(); return; }
+  if (!response?.ok) {
+    const error = data.error || "Deletion failed. Please retry.";
+    if (FOLDER_ID !== preview.folder.id) {
+      cancelFolderDeletion();
+      $("folderMsg").textContent = `Deletion of “${preview.folder.name}” failed: ${error}`;
+      return;
+    }
+    if (response?.status === 409) {
+      await openFolderDeletion(); // Fresh scope requires freshly typed confirmation.
+    }
+    $("deleteFolderError").textContent = error;
+    updateDeletionConfirmation(); return;
+  }
+  cancelFolderDeletion();
+  FOLDERS = FOLDERS.filter(f => f.id !== preview.folder.id);
+  if (ACTIVE_FOLDER === preview.folder.id) ACTIVE_FOLDER = null;
+  if (FOLDER_ID === preview.folder.id) FOLDER_ID = FOLDERS[0]?.id ?? null;
+  renderFolderControls();
+  await changeFolder(); // Invalidate pending reads immediately, even if refresh fails.
+  await loadFolders(FOLDER_ID);
+  $("folderMsg").textContent = `Folder “${preview.folder.name}” was permanently deleted.`;
 }
