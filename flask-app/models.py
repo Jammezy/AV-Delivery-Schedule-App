@@ -147,6 +147,7 @@ DEFAULT_CONFIG = {
     "fridayCloseHour": 19,
     "dayCloseHours": {},     # e.g. {"Fri": 19} - overrides fridayCloseHour
     "requireLeadDuringOpen": True,
+    "requireLeadDuringLate": False,
     "blockClopening": True,
     "slotNames": ["DLA", "A4", "A1", "A2"],
     "leadSlotName": "DLA",
@@ -167,7 +168,7 @@ INT_FIELDS = [
     "maxMorningPlusEvening", "fridayCloseHour", "solverTimeLimit",
     "solverWorkers", "wFairness", "wPreference", "wSpread", "burdenWeight",
 ]
-BOOL_FIELDS = ["requireLeadDuringOpen", "blockClopening", "allowSelfRegister"]
+BOOL_FIELDS = ["requireLeadDuringOpen", "requireLeadDuringLate", "blockClopening", "allowSelfRegister"]
 
 
 def validate_config(cfg):

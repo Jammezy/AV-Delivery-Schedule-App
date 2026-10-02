@@ -5,6 +5,62 @@ const vm = require('node:vm');
 const {JSDOM} = require('jsdom');
 const ExcelJS = require('exceljs');
 
+test('lead settings stay independent, update live, explain ranges and save both switches', async () => {
+  const {dom, run, doc} = await admin();
+  run('CONFIG = {...CONFIG, hourStart:7, hourEnd:21, lateHourStart:19, requireLeadDuringOpen:true, requireLeadDuringLate:false}; renderSettings()');
+  const el = id => doc.getElementById(id);
+  const day = el('cfg_requireLeadDuringOpen'), late = el('cfg_requireLeadDuringLate');
+  const change = (key, value, event = 'input') => {
+    el('cfg_' + key).value = value;
+    el('cfg_' + key).dispatchEvent(new dom.window.Event(event));
+  };
+  assert.equal(day.checked, true); assert.equal(late.checked, false);
+  assert.match(el('leadOpenLabel').textContent, /7AM to 7PM/);
+  assert.match(el('leadLateLabel').textContent, /7PM to 10PM/);
+  day.click(); late.click();
+  assert.equal(day.checked, false); assert.equal(late.checked, true);
+  assert.equal(day.disabled, false); assert.equal(late.disabled, false);
+  change('lateHourStart', 18);
+  assert.match(el('leadOpenLabel').textContent, /7AM to 6PM/);
+  assert.match(el('leadLateLabel').textContent, /6PM to 10PM/);
+  assert.match(el('leadLateHelp').textContent, /anyone can work 6PM to 10PM/);
+  assert.equal(day.checked, false); assert.equal(late.checked, true);
+  change('hourStart', 8, 'change'); change('hourEnd', 20);
+  assert.match(el('leadOpenLabel').textContent, /8AM to 6PM/);
+  assert.match(el('leadLateLabel').textContent, /6PM to 9PM/);
+  change('lateHourStart', '');
+  assert.match(el('leadLateLabel').textContent, /7PM to 9PM/);
+  change('lateHourStart', 22);
+  assert.equal(late.disabled, true); assert.match(el('leadLateHelp').textContent, /No late hours/);
+  change('lateHourStart', 7);
+  assert.equal(day.disabled, true); assert.equal(late.disabled, false);
+  assert.match(el('leadOpenHelp').textContent, /No day hours/);
+  change('lateHourStart', 18);
+  assert.equal(day.disabled, false); assert.equal(late.checked, true);
+  const help = el('leadHelpBtn'), popup = el('leadHelpPopup');
+  assert.equal(help.getAttribute('aria-controls'), popup.id);
+  help.click(); assert.equal(popup.style.display, 'block'); assert.equal(help.getAttribute('aria-expanded'), 'true');
+  help.click(); assert.equal(help.getAttribute('aria-expanded'), 'false');
+  help.click(); el('leadHelpClose').click(); assert.equal(popup.style.display, 'none');
+  for (const target of [help, el('leadHelpClose')]) {
+    help.click(); target.dispatchEvent(new dom.window.KeyboardEvent('keydown', {key:'Escape', bubbles:true}));
+    assert.equal(help.getAttribute('aria-expanded'), 'false');
+    assert.equal(doc.activeElement, help);
+  }
+  let saved;
+  dom.window.fetch = async (url, options) => {
+    if (url === '/api/config' && options.method === 'PUT') saved = JSON.parse(options.body);
+    return {ok:true,status:200,json:async()=>saved || {}};
+  };
+  run('refreshDiagnostics = async () => {}');
+  await run('saveSettings()');
+  assert.equal(saved.requireLeadDuringOpen, false); assert.equal(saved.requireLeadDuringLate, true);
+  run('renderSettings()');
+  assert.equal(el('cfg_requireLeadDuringLate').checked, true);
+  run('clearSession()'); assert.equal(el('leadHelpBtn'), null);
+  dom.window.close();
+});
+
 async function planningAdmin() {
   const {dom, run, doc} = await admin();
   let roster = [{id:1,name:'Alex',minHours:20,maxHours:100,isLead:false}];
