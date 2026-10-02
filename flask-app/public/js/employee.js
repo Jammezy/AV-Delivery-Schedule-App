@@ -15,6 +15,40 @@ let state = {};
 let mode = 1;
 let painting = false;
 let paintedThisDrag = new Set();
+let CONSENT_RECONFIRM = false;
+let SUBMITTING = false;
+
+function resetConsent(consent = {}) {
+  $("allowExtraOpenings").checked = consent.allowExtraOpenings === true;
+  $("allowExtraClosings").checked = consent.allowExtraClosings === true;
+  CONSENT_RECONFIRM = consent.reconfirmationNeeded === true;
+}
+
+function updateConsent() {
+  const context = CONTEXT?.boundaryContext;
+  if (!context) return;
+  const caps = context.caps;
+  $("boundaryLimits").textContent = `Normal weekly limits: ${caps.openings} openings, ${caps.closings} closings, ${caps.combined} combined.`;
+  $("boundaryExplanation").textContent = `Extra shifts are optional and are not guaranteed. Fairness comes first. Only fully preferred blocks can exceed normal limits. Each choice also permits that type of preferred shift to exceed the combined limit of ${caps.combined} opening and closing shifts.`;
+  let total = 0;
+  for (const [kind, stem, field, required] of [["openings", "opening", "allowExtraOpenings", "opening"], ["closings", "closing", "allowExtraClosings", "closingRequired"]]) {
+    const count = Object.entries(context.blocks).filter(([day, b]) => b[stem].length && b[required].length &&
+      b[stem].every(h => state[cellKey(day, h)] === 2) && b[required].every(h => [1,2].includes(state[cellKey(day,h)]))).length;
+    total += count;
+    const box = $(field);
+    box.disabled = !count && !box.checked; // A recorded choice can always be cleared.
+    $(stem + "ConsentLabel").textContent = `I am okay with more than ${caps[kind]} ${stem} shifts per week, on days when I mark the full ${stem} block preferred.`;
+    $(stem + "ConsentNote").textContent = count ? `You marked ${count} fully preferred ${kind}; the normal limit is ${caps[kind]}. These are possible assignments, not a guarantee.` :
+      `${box.checked ? "Opted in; no" : "No"} qualifying preferred block currently. Mark every hour of a complete ${stem} block preferred, with enough available hours for a minimum shift.`;
+  }
+  $("boundaryStatus").textContent = [
+    total > caps.combined ? `Your ${total} preferred boundary candidates exceed the combined limit of ${caps.combined}, even if neither individual limit is exceeded.` : "",
+    !context.enabled ? "Your supervisor has not enabled additional preferred opening/closing shifts. Normal limits currently apply." : "",
+    CONSENT_RECONFIRM ? "Reconfirmation needed after settings changed." : ""
+  ].filter(Boolean).join(" ");
+  $("reconfirmConsent").hidden = !CONSENT_RECONFIRM;
+  $("submitBtn").disabled = SUBMITTING || CONSENT_RECONFIRM || !CONTEXT?.folder;
+}
 
 const $ = (id) => document.getElementById(id);
 
@@ -165,6 +199,7 @@ function runsFor(day) {
 }
 
 function updateTally() {
+  updateConsent();
   const values = Object.values(state);
   const weekdayHours = Object.entries(state).filter(([k,v]) => CONFIG.days.includes(k.split("_")[0]) && v > 0).length;
   const avail = values.filter((v) => v >= 1).length;
@@ -220,6 +255,11 @@ async function loadPrevious(quiet) {
   if (revision !== LOAD_REVISION || folderId !== CONTEXT?.folder?.id || name !== $("nameInput").value.trim()) return;
   if (!res.ok) { showMsg(escapeHtml(data.error || "Could not load submission."), "err"); return; }
   EMPLOYEE = data.employee || null;
+  if (data.boundaryContext && data.config) {
+    CONTEXT.boundaryContext = data.boundaryContext;
+    CONTEXT.config = CONFIG = data.config;
+  }
+  resetConsent(data.consent);
   if (!data.found) {
     state = {}; $("commentInput").value = ""; updateCommentCount(); renderGrid();
     if (!quiet) showMsg("No previous submission under that name — start fresh below.", "info");
@@ -235,21 +275,32 @@ async function loadPrevious(quiet) {
 }
 
 async function submitAvailability() {
+  if (SUBMITTING || CONSENT_RECONFIRM) return;
   const name = $("nameInput").value.trim();
   if (!name) return showMsg("Enter your name before submitting.", "err");
   const avail = Object.values(state).filter((v) => v >= 1).length;
   if (!CONTEXT?.folder) return showMsg("No folder is accepting submissions.", "err");
   if ([...$("commentInput").value].length > 99) return showMsg("Comments must be shorter than 100 characters.", "err");
 
+  SUBMITTING = true;
   $("submitBtn").disabled = true;
   try {
     const res = await fetch("/api/availability", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, availability: state, comment:$("commentInput").value, folderId:CONTEXT.folder.id, revision:CONTEXT.revision }),
+      body: JSON.stringify({ name, availability: state, comment:$("commentInput").value, folderId:CONTEXT.folder.id, revision:CONTEXT.revision,
+        allowExtraOpenings: $("allowExtraOpenings").checked, allowExtraClosings: $("allowExtraClosings").checked,
+        consentContext: CONTEXT.boundaryContext?.token }),
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) return showMsg(escapeHtml(data.error || "That didn't save. Try again."), "err");
+    if (!res.ok) {
+      if (res.status === 409) {
+        CONSENT_RECONFIRM = true;
+        await refreshContext(); // Preserve the unsaved grid, comment and choices.
+        updateConsent();
+      }
+      return showMsg(escapeHtml(data.error || "That didn't save. Try again."), "err");
+    }
 
     let extra = "";
     if (data.shortOfMinimum > 0) {
@@ -262,7 +313,8 @@ async function submitAvailability() {
       data.shortOfMinimum > 0 ? "warn" : "ok");
   } catch (_) { showMsg("Could not save. Your entries are still here; please retry.", "err");
   } finally {
-    $("submitBtn").disabled = !CONTEXT?.folder;
+    SUBMITTING = false;
+    $("submitBtn").disabled = CONSENT_RECONFIRM || !CONTEXT?.folder;
   }
 }
 
@@ -271,6 +323,7 @@ async function refreshContext() {
   const res = await fetch("/api/submission-context");
   if (!res.ok) throw new Error("Could not load submission folder.");
   const next = await res.json();
+  if (CONTEXT && next.boundaryContext?.token !== CONTEXT.boundaryContext?.token) CONSENT_RECONFIRM = true;
   if (CONTEXT && (next.revision !== CONTEXT.revision || next.folder?.id !== CONTEXT.folder?.id) &&
       !confirm(`The submission destination is now ${next.folder?.name || "closed"}. Keep your entered availability and use this destination?`)) return;
   CONTEXT = next; CONFIG = next.config; LOAD_REVISION++;
@@ -282,6 +335,8 @@ async function refreshContext() {
 (async function init() {
   $("submitBtn").disabled = true;
   $("commentInput").oninput = updateCommentCount;
+  for (const id of ["allowExtraOpenings", "allowExtraClosings"]) $(id).onchange = updateConsent;
+  $("reconfirmConsent").onclick = () => { CONSENT_RECONFIRM = false; updateConsent(); };
   await refreshContext();
   await loadRoster();
   renderGrid();
@@ -311,5 +366,6 @@ async function refreshContext() {
     renderGrid();
   };
   // Look up their record as soon as they've picked a name.
+  $("nameInput").addEventListener("input", () => { LOAD_REVISION++; resetConsent(); updateConsent(); });
   $("nameInput").addEventListener("change", () => loadPrevious(true));
 })();

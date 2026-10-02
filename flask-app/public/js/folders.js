@@ -1,6 +1,7 @@
 let FOLDERS = [], FOLDER_ID = null, ACTIVE_FOLDER = null;
 let SELECTED = new Set(), OVERVIEW = null, PINNED = null, PREVIEWED = null;
 let VIEW_REVISION = 0;
+let OVERVIEW_REQUEST = 0;
 
 function $(id) { return document.getElementById(id); }
 
@@ -66,8 +67,9 @@ function validAvailability(av) {
 async function renderFolderOverview(reset = false) {
   if (!FOLDER_ID) return;
   const revision = VIEW_REVISION;
+  const requestId = ++OVERVIEW_REQUEST;
   const data = await apiGet(`/api/availability?${folderQuery()}`);
-  if (!data || revision !== VIEW_REVISION) return;
+  if (!data || revision !== VIEW_REVISION || requestId !== OVERVIEW_REQUEST || !Array.isArray(data.employees)) return;
   OVERVIEW = data;
   const submitted = data.employees.filter(e => Object.hasOwn(data.availability, e.name));
   submitted.sort((a,b) => Object.keys(validAvailability(data.availability[b.name])).length - Object.keys(validAvailability(data.availability[a.name])).length || a.name.localeCompare(b.name));
@@ -81,7 +83,7 @@ async function renderFolderOverview(reset = false) {
   updateSelectionCount();
   $("overviewArea").innerHTML = `<p>Hover or focus to preview. Click to pin; click again, outside, or press Escape to clear.</p>
     <div class="availability-viewer"><div class="viewer-list">${submitted.map(e => `<button class="secondary viewer-person" data-person="${e.id}" aria-pressed="false">${escapeHtml(e.name)} — ${Object.keys(validAvailability(data.availability[e.name])).length} hrs</button>`).join("")}</div>
-    <div><p id="viewerCaption" role="status"></p><p id="viewerComment"></p><div class="scroll-x" id="viewerGrid"></div></div></div>
+    <div><p id="viewerCaption" role="status"></p><p id="viewerComment"></p><div id="viewerConsent" role="status"></div><div class="scroll-x" id="viewerGrid"></div></div></div>
     <p>Missing submissions: ${data.missing.length ? data.missing.map(escapeHtml).join(", ") : "None"}.</p>`;
   $("overviewArea").querySelectorAll("[data-person]").forEach(btn => {
     const id = Number(btn.dataset.person);
@@ -104,6 +106,22 @@ function drawViewer() {
         (PINNED ? `<button class="secondary" id="openEditAvailBtn" style="margin-left: 8px; padding: 2px 8px; font-size: 0.85rem;">Edit</button>` : "")
       : "All submissions: available employee count per hour";
   $("viewerComment").textContent = employee ? OVERVIEW.comments[employee.name] || "No comment" : "";
+  $("viewerConsent").textContent = "";
+  if (employee) {
+    const consent = OVERVIEW.submissions?.find(s => s.employeeId === employee.id)?.consent;
+    const lines = [`Weekly hours: ${employee.minHours}–${employee.maxHours}. Lead: ${employee.isLead ? "yes" : "no"}.`];
+    for (const [label, recorded, effective, kind] of [["openings", "allowExtraOpenings", "effectiveOpenings", "openings"], ["closings", "allowExtraClosings", "effectiveClosings", "closings"]]) {
+      let status = "not opted in";
+      if (consent?.[recorded]) {
+        status = "opted in. " + (consent.reconfirmationNeeded ? "Reconfirmation required after limits or shift blocks changed." :
+          !consent.enabled ? "Recorded opt-in; extra preferred shifts are currently disabled." :
+          !consent.candidates[kind].length ? "No qualifying preferred block currently." : consent[effective] ? "Eligible; assignments are optional and not guaranteed." : "Not currently effective.");
+      }
+      lines.push(`Additional ${label}: ${status}`);
+    }
+    if (consent) lines.push(`Limits: ${consent.caps.openings} openings, ${consent.caps.closings} closings, ${consent.caps.combined} combined. Fully preferred candidates: ${consent.candidates.openings.length} openings, ${consent.candidates.closings.length} closings.`);
+    $("viewerConsent").textContent = lines.join(" ");
+  }
   $("overviewArea").querySelectorAll("[data-person]").forEach(b => b.setAttribute("aria-pressed", String(Number(b.dataset.person) === PINNED)));
   $("viewerGrid").innerHTML = `<table class="data-table"><thead><tr><th>Time</th>${CONFIG.availabilityDays.map(d => `<th>${d}</th>`).join("")}</tr></thead><tbody>${hours().map(h => `<tr><th>${blockLabel(h)}</th>${CONFIG.availabilityDays.map(d => {
     const key = `${d}_${String(h).padStart(2,"0")}`;
@@ -301,7 +319,7 @@ async function loadSavedSchedules() {
     if (!saved || revision !== VIEW_REVISION) return;
     LAST_RESULT = saved.result;
     $("scheduleOutput").innerHTML = renderPrintableTable(LAST_RESULT.schedule, LAST_RESULT.config);
-    $("fairnessOutput").innerHTML = fairnessTable(LAST_RESULT.fairness || []);
+    $("fairnessOutput").innerHTML = fairnessTable(LAST_RESULT.fairness || []) + boundarySummary(LAST_RESULT);
     $("generateMsg").textContent = "Showing a saved schedule with its original settings and availability.";
     $("downloadBtn").style.display = "inline-block";
   });

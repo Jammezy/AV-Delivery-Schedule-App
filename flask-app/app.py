@@ -21,6 +21,7 @@ from models import (
 )
 import solver as solver_module
 import weekend_generator
+from boundary import boundary_context, consent_status
 
 app = Flask(__name__, static_folder="public", static_url_path="")
 
@@ -155,8 +156,19 @@ def folder_json(f):
     return {"id": f.id, "name": f.name, "archived": f.archived}
 
 
-def submission_json(row):
+def recorded_consent(row):
+    return {'allowExtraOpenings': row.allow_extra_openings,
+            'allowExtraClosings': row.allow_extra_closings, 'consentContext': row.consent_context}
+
+
+def freeze_consent(cfg, rows, folder_id):
+    cfg['boundaryConsentFolderId'] = folder_id
+    cfg['boundaryConsents'] = {str(r.employee_id): recorded_consent(r) for r in rows}
+
+
+def submission_json(row, cfg=None):
     return {"employeeId": row.employee_id, "availability": row.get_data(),
+            'consent': consent_status(json.loads(row.data_json), recorded_consent(row), cfg or get_config()),
             "comment": row.comment, "submittedAt": row.submitted_at.isoformat() + "Z"}
 
 
@@ -173,7 +185,11 @@ def put_config():
     data = body()
     data["days"] = ["Mon", "Tue", "Wed", "Thu", "Fri"]
     data.pop("availabilityDays", None)
-    updated, errors = save_config(data)
+    # Input-only snapshot metadata can never be installed as global configuration.
+    data.pop('boundaryConsents', None)
+    data.pop('boundaryConsentFolderId', None)
+    with write_transaction():
+        updated, errors = save_config(data)
     if errors:
         return jsonify({"errors": errors, "config": updated}), 400
     return jsonify(updated)
@@ -259,6 +275,7 @@ def submission_context():
         state = SubmissionState.get_by_id(1)
         result = {"folder": folder_json(state.active_folder) if state.active_folder_id else None,
                   "revision": state.revision, "config": get_config()}
+        result['boundaryContext'] = boundary_context(result['config'])
     return jsonify(result)
 
 
@@ -399,6 +416,13 @@ def submit_availability():
             abort(409, "The submission folder changed. Refresh the form and confirm the current folder before submitting.")
         folder_or_404(state.active_folder_id)
         cfg = get_config()
+        consent_fields = ('allowExtraOpenings', 'allowExtraClosings')
+        explicit_consent = any(k in data for k in consent_fields)
+        if explicit_consent:
+            if any(type(data.get(k)) is not bool for k in consent_fields):
+                abort(400, 'Both consent choices must be explicit booleans.')
+            if data.get('consentContext') != boundary_context(cfg)['token']:
+                abort(409, 'Limits or shift blocks changed. Refresh and reconfirm your consent choices.')
         valid = {f"{d}_{h:02d}" for d in cfg['availabilityDays'] for h in range(cfg["hourStart"], cfg["hourEnd"] + 1)}
         if any(k not in valid or (type(v) not in (int, bool) or v not in (0, 1, 2)) for k, v in availability.items()):
             abort(400, "Invalid availability time slot. Refresh the form and try again.")
@@ -411,6 +435,9 @@ def submit_availability():
         row, _ = FolderAvailability.get_or_create(employee=employee, folder=state.active_folder_id)
         row.data_json = json.dumps(availability)
         row.comment = comment
+        row.allow_extra_openings = data.get('allowExtraOpenings', False)
+        row.allow_extra_closings = data.get('allowExtraClosings', False)
+        row.consent_context = boundary_context(cfg)['token'] if explicit_consent else None
         row.submitted_at = datetime.datetime.utcnow()
         row.save()
     available = sum(normalize_level(v) > 0 for v in availability.values())
@@ -430,8 +457,10 @@ def get_one_availability(name):
     employee = Employee.get_or_none(Employee.name == resolve_name(name))
     row = FolderAvailability.get_or_none((FolderAvailability.employee == employee.id) &
           (FolderAvailability.folder == state.active_folder_id)) if employee else None
-    result = submission_json(row) if row else {}
+    cfg = get_config()
+    result = submission_json(row, cfg) if row else {}
     result.update(found=row is not None, employee=serialize(employee) if employee else None)
+    result.update(boundaryContext=boundary_context(cfg), config=cfg)
     return jsonify(result)
 
 
@@ -442,17 +471,20 @@ def get_all_availability():
     folder = folder_or_404(request.args.get("folderId", type=int))
     employees = [serialize(e) for e in Employee.select().order_by(Employee.name)]
     rows = list(FolderAvailability.select().where(FolderAvailability.folder == folder))
+    cfg = get_config()
     availability = {r.employee.name: r.get_data() for r in rows}
     return jsonify(folder=folder_json(folder), employees=employees, availability=availability,
         submittedAt={r.employee.name: r.submitted_at.isoformat() + "Z" for r in rows},
         comments={r.employee.name: r.comment for r in rows},
-        submissions=[submission_json(r) for r in rows],
+        submissions=[submission_json(r, cfg) for r in rows],
         missing=[e["name"] for e in employees if e["name"] not in availability])
 
 @app.put("/api/admin/availability")
 @require_admin
 def admin_update_availability():
     data = body()
+    if any(k in data for k in ('allowExtraOpenings', 'allowExtraClosings', 'consentContext', 'consent')):
+        abort(400, 'Only employees can record or reconfirm boundary consent.')
     employee_id = data.get("employeeId")
     folder_id = data.get("folderId")
     availability = data.get("availability")
@@ -494,6 +526,7 @@ def _load_inputs(folder_id, ids=None):
     rows = list(rows)
     if ids is not None and {r.employee_id for r in rows} != set(ids):
         abort(400, "Every selected employee must have a submission in this folder.")
+    freeze_consent(cfg, rows, folder_id)
     return cfg, [serialize(r.employee) for r in rows], {r.employee.name: r.get_data() for r in rows}, rows
 
 @app.get("/api/diagnostics")
@@ -605,7 +638,8 @@ def generate():
         roster = [serialize(r.employee) for r in rows]
         availability = {r.employee.name: r.get_data() for r in rows}
         cfg = get_config()
-        submissions = [submission_json(r) for r in rows]
+        freeze_consent(cfg, rows, folder.id)
+        submissions = [submission_json(r, cfg) for r in rows]
     seed = data.get("seed")
     if seed is not None and (type(seed) is not int or not 0 <= seed < 2**31):
         abort(400, "Invalid generation seed.")

@@ -81,6 +81,9 @@ class FolderAvailability(BaseModel):
     folder = ForeignKeyField(Folder, on_delete="RESTRICT")
     data_json = TextField(default="{}")
     comment = TextField(default="")
+    allow_extra_openings = BooleanField(default=False)
+    allow_extra_closings = BooleanField(default=False)
+    consent_context = TextField(null=True)
     submitted_at = DateTimeField(default=datetime.datetime.utcnow)
 
     class Meta:
@@ -133,6 +136,7 @@ def normalize_level(value):
 
 
 DEFAULT_CONFIG = {
+    "allowPreferredBoundaryExtras": False,
     "days": ["Mon", "Tue", "Wed", "Thu", "Fri"],
     "hourStart": 7,
     "hourEnd": 21,          # 21 is the 9-10PM block, so this closes at 10PM
@@ -221,6 +225,15 @@ def init_db():
     with write_transaction():
         db.create_tables([Employee, Availability, Config, Folder, SubmissionState,
                           FolderAvailability, SavedSchedule, SavedWeekendSchedule, AdminSession])
+        # Additive, serialized, transactional migration; preserve every existing row.
+        from playhouse.migrate import SqliteMigrator, PostgresqlMigrator, migrate
+        migrator = PostgresqlMigrator(db) if isinstance(db, PostgresqlDatabase) else SqliteMigrator(db)
+        columns = {c.name for c in db.get_columns('folderavailability')}
+        for name, field in [('allow_extra_openings', BooleanField(default=False)),
+                            ('allow_extra_closings', BooleanField(default=False)),
+                            ('consent_context', TextField(null=True))]:
+            if name not in columns:
+                migrate(migrator.add_column('folderavailability', name, field))
         Config.get_or_create(id=1, defaults={"data_json": json.dumps(DEFAULT_CONFIG)})
         if not SubmissionState.get_or_none(SubmissionState.id == 1):
             imported = Folder.create(name="Imported availability")
@@ -248,6 +261,8 @@ def get_config():
 
 def save_config(new_cfg):
     """Returns (config, errors). Nothing is written when errors is non-empty."""
+    if 'allowPreferredBoundaryExtras' in (new_cfg or {}) and type(new_cfg['allowPreferredBoundaryExtras']) is not bool:
+        return get_config(), ['Additional preferred boundary shifts must be a boolean.']
     merged = get_config()
     merged.update(coerce_config(new_cfg or {}))
     errors = validate_config(merged)

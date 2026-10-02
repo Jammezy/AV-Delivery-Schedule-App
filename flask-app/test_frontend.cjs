@@ -5,6 +5,65 @@ const vm = require('node:vm');
 const {JSDOM} = require('jsdom');
 const ExcelJS = require('exceljs');
 
+test('boundary controls count complete blocks, preserve choices, reconfirm conflicts, and prevent duplicate sends', async () => {
+  const dom = new JSDOM(fs.readFileSync(__dirname+'/public/index.html','utf8'), {url:'http://localhost/',runScripts:'outside-only'});
+  const run = code => vm.runInContext(code,dom.getInternalVMContext()), doc=dom.window.document, el=id=>doc.getElementById(id);
+  dom.window.HTMLElement.prototype.scrollIntoView=()=>{};
+  dom.window.confirm=()=>true;
+  let ctx={folder:{id:1},revision:1,config:{...config,minShiftLength:2},boundaryContext:{token:'one',enabled:false,caps:{openings:2,closings:1,combined:2},blocks:{
+    Mon:{opening:[7,8],closing:[19,20,21],closingRequired:[19,20,21]},
+    Tue:{opening:[7,8],closing:[19,20,21],closingRequired:[19,20,21]}}}};
+  let sends=0, captured, resolveSend;
+  const reply=(data,status=200)=>({ok:status===200,status,json:async()=>structuredClone(data)});
+  dom.window.fetch=async(url,opts)=>{
+    if(url==='/api/submission-context')return reply(ctx);
+    if(url==='/api/roster')return reply({names:['Alex']});
+    if(opts?.method==='POST'){sends++;captured=JSON.parse(opts.body);return new Promise(r=>resolveSend=r);}
+    return reply({found:true,employee:{id:1},availability:{Mon_07:2,Mon_08:2},comment:'reload',consent:{allowExtraOpenings:true,allowExtraClosings:false,reconfirmationNeeded:true}});
+  };
+  await run(fs.readFileSync(__dirname+'/public/js/employee.js','utf8'));
+  assert.equal(el('allowExtraOpenings').checked,false);assert.equal(el('allowExtraOpenings').disabled,true);
+  run('state={Mon_07:2,Mon_08:1}; updateConsent()');assert.equal(el('allowExtraOpenings').disabled,true);
+  run('state={Mon_07:2,Mon_08:2,Tue_07:2,Tue_08:2,Mon_19:2,Mon_20:2,Mon_21:2}; updateConsent()');
+  assert.equal(el('allowExtraOpenings').disabled,false);assert.equal(el('allowExtraClosings').disabled,false);
+  assert.equal(el('allowExtraOpenings').checked,false);assert.match(el('boundaryStatus').textContent,/combined limit of 2/);
+  assert.match(el('boundaryStatus').textContent,/has not enabled/);
+  el('allowExtraOpenings').click();assert.equal(el('allowExtraClosings').checked,false);
+  run('state.Mon_08=1;state.Tue_08=0;updateConsent()');
+  assert.equal(el('allowExtraOpenings').checked,true);assert.equal(el('allowExtraOpenings').disabled,false);
+  assert.match(el('openingConsentNote').textContent,/no qualifying preferred block currently/i);
+  el('allowExtraOpenings').click();assert.equal(el('allowExtraOpenings').disabled,true);
+  el('nameInput').value='Alex';await run('loadPrevious(true)');
+  assert.equal(el('allowExtraOpenings').checked,true);assert.equal(el('submitBtn').disabled,true);
+  el('reconfirmConsent').click();assert.equal(el('submitBtn').disabled,false);
+  el('commentInput').value='draft';const pending=run('submitAvailability()');await run('submitAvailability()');
+  assert.equal(sends,1);assert.equal(captured.allowExtraOpenings,true);assert.equal(captured.allowExtraClosings,false);assert.equal(captured.consentContext,'one');
+  ctx.boundaryContext.token='two';ctx.boundaryContext.caps.openings=0;
+  resolveSend(reply({error:'Settings changed'},409));await pending;
+  assert.equal(el('commentInput').value,'draft');assert.equal(run('state.Mon_07'),2);
+  assert.equal(el('submitBtn').disabled,true);assert.match(el('openingConsentLabel').textContent,/more than 0/);
+  assert.match(el('boundaryStatus').textContent,/Reconfirmation needed/);
+  el('reconfirmConsent').click();const retry=run('submitAvailability()');resolveSend(reply({availableHours:2,preferredHours:2}));await retry;
+  assert.equal(captured.consentContext,'two');assert.match(el('msgArea').textContent,/Saved/);
+  el('nameInput').value='Other';el('nameInput').dispatchEvent(new dom.window.Event('input'));
+  assert.equal(el('allowExtraOpenings').checked,false);
+  dom.window.close();
+});
+
+test('supervisor consent follows selected employee and rejects out of order refreshes',async()=>{
+  const {dom,run,doc}=await admin();
+  const c={allowExtraOpenings:true,allowExtraClosings:false,effectiveOpenings:true,enabled:true,caps:{openings:2,closings:1,combined:2},candidates:{openings:['Mon'],closings:[]}};
+  run(`OVERVIEW.submissions=[{employeeId:1,consent:${JSON.stringify(c)}}];PINNED=1;drawViewer()`);
+  assert.match(doc.getElementById('viewerConsent').textContent,/Additional openings: opted in/);
+  run('PINNED=2;drawViewer()');assert.doesNotMatch(doc.getElementById('viewerConsent').textContent,/opted in\. Eligible/);
+  let pending=[];dom.window.fetch=()=>new Promise(resolve=>pending.push(resolve));
+  const old=run('renderOverview()'), fresh=run('renderOverview()');
+  pending[1]({ok:true,status:200,json:async()=>({...overview,submissions:[{employeeId:1,consent:{...c,reconfirmationNeeded:true}}]})});await fresh;
+  pending[0]({ok:true,status:200,json:async()=>({...overview,submissions:[{employeeId:1,consent:c}]})});await old;
+  run('PINNED=1;drawViewer()');assert.match(doc.getElementById('viewerConsent').textContent,/Reconfirmation required/);
+  run('clearFolderView()');assert.equal(doc.getElementById('viewerConsent'),null);dom.window.close();
+});
+
 test('lead settings stay independent, update live, explain ranges and save both switches', async () => {
   const {dom, run, doc} = await admin();
   run('CONFIG = {...CONFIG, hourStart:7, hourEnd:21, lateHourStart:19, requireLeadDuringOpen:true, requireLeadDuringLate:false}; renderSettings()');
@@ -215,6 +274,14 @@ test('Excel export uses saved settings even after current hours change',async()=
   assert.equal(workbook.getWorksheet('Raw_Logic').getCell('A2').value,'Mon 7:00');
   assert.equal(workbook.getWorksheet('Printable_Schedule').getCell('B3').value,'Alex');
   assert.equal(workbook.getWorksheet('Printable_Schedule').columnCount,10);
+  run(`LAST_RESULT.boundarySummary=[{name:'Alex',openings:3,closings:0,qualifyingOpenings:1,qualifyingClosings:0,overrun:2,caps:{openings:2,closings:1,combined:2},consent:{allowExtraOpenings:true,allowExtraClosings:false,effectiveOpenings:true,effectiveClosings:false,consentContext:'saved-context',enabled:true}}]; CONFIG.allowPreferredBoundaryExtras=false;`);
+  assert.match(run('boundarySummary(LAST_RESULT)'),/3 \/ 2/);
+  await run('downloadExcel()');
+  const savedBytes=await dom.window.exportWorkbook.xlsx.writeBuffer();
+  const savedWorkbook=new ExcelJS.Workbook();await savedWorkbook.xlsx.load(Buffer.from(savedBytes));
+  const bs=savedWorkbook.getWorksheet('Boundary consent');
+  assert.equal(bs.getCell('B3').value,3);assert.equal(bs.getCell('I3').value,true);
+  assert.equal(bs.getCell('M3').value,'saved-context');assert.equal(bs.getCell('N3').value,true);
   dom.window.close();
 });
 test('employee saves preferences and comments to displayed folder and retains failed edits',async()=>{

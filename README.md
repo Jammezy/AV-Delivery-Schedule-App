@@ -19,11 +19,15 @@ Under the hood, the app employs an operations research approach using the OR-Too
 
 The core of the schedule generation is powered by the `Schedule_Maker_4000.py` logic, now integrated into the `solver.py` module using Google's **OR-Tools CP-SAT solver**.
 
-The solver runs in a **two-phase approach**:
-1. **Feasibility Phase:** The solver first searches rapidly for *any* valid schedule that strictly obeys all the hard constraints (availability, staffing requirements, shift length limits). This ensures that if a valid schedule exists, the system will find it quickly without getting bogged down by optimization.
-2. **Optimization Phase (Fairness):** Once a feasible schedule is found, it is fed back to the solver as a starting point. The solver uses the remaining time budget to maximize the "fairness" objective, swapping shifts to balance the quality of the schedules given to each employee. If the solver runs out of time during this phase, it still returns the best valid schedule it found, rather than failing.
+The weekday solver uses ordered objectives: maximize the minimum employee deal
+score, then preferred hours, then minimize normal boundary-cap overruns, then
+share opening/closing duties. Earlier scores cannot worsen during later stages.
+One total deadline applies; a valid incumbent survives a later timeout.
 
-If the solver cannot find a feasible schedule (even after the pre-check passes), it runs an "infeasible explanation" routine. It relaxes the hard constraints (allowing understaffing or missed minimum hours) and reports the smallest set of rules that had to bend, producing a concrete error like *"Tue 7AM–9AM: short 1 person"* instead of a generic failure.
+Employees may separately consent to additional fully preferred openings and
+closings when the supervisor enables the feature. The recorded agreement is
+folder-specific and must be reconfirmed after relevant caps or blocks change.
+See [implementation and review guide](flask-app/PREFERRED_BOUNDARY_CONSENT.md).
 
 ## Fairness Scoring
 
@@ -65,7 +69,7 @@ The schedule generator is highly configurable. Admins can tweak the following ru
   * `maxMorningPlusEvening`: Max combined opening/closing shifts per week.
 * **Clopening:** `blockClopening` prevents scheduling an employee for a closing shift followed by an opening shift the next morning.
 * **Lead Coverage:** `requireLeadDuringOpen` (on by default) requires a lead in every staffed hour before `lateHourStart`. The independent `requireLeadDuringLate` switch (off by default) requires a lead from `lateHourStart` through the last staffed hour when enabled. Either switch can be used on its own; closed and unstaffed hours are exempt. Settings labels and help follow the configured hours immediately.
-* **Solver Weights:** The trade-off between raising the fairness floor (`wFairness`), granting raw preferred hours (`wPreference`), and sharing opening/closing duties (`wSpread`) can be adjusted.
+* **Fairness:** `burdenWeight` controls the cost of scarce preferred coverage. Objective priorities are fixed; legacy trade-off weights no longer change weekday priority order.
 
 ## Running the App
 
