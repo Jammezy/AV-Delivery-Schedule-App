@@ -289,6 +289,8 @@ table.data-table tbody tr:nth-child(even) { background: #fafbfc; }
   .card { border: none; padding: 0; }
 }
 .availability-viewer { display:grid; grid-template-columns:minmax(180px, 240px) minmax(0, 1fr); gap:16px; }
+.availability-viewer > div { min-width:0; }
+#viewerConsent { overflow-wrap:anywhere; margin-bottom:12px; }
 .viewer-list { max-height:440px; overflow:auto; }
 .viewer-person { display:block; width:100%; text-align:left; margin-bottom:6px; }
 .viewer-person[aria-pressed="true"] { outline:3px solid #1f4e78; }
@@ -298,7 +300,7 @@ table.data-table tbody tr:nth-child(even) { background: #fafbfc; }
 button:focus-visible, select:focus-visible, textarea:focus-visible { outline:3px solid #1f4e78; outline-offset:3px; }
 #folderSelect { max-width:100%; padding:8px; }
 #commentInput { width:100%; box-sizing:border-box; }
-@media (max-width:700px) { .availability-viewer { grid-template-columns:1fr; } .viewer-list { max-height:180px; } }
+@media (max-width:700px) { .availability-viewer { grid-template-columns:minmax(0, 1fr); } .viewer-list { max-height:180px; } }
 .staffing-plan { margin: 16px 0; padding: 16px; border: 1px solid #ccd4dc; border-radius: 8px; }
 .staffing-plan .stat-strip { display: flex; flex-wrap: wrap; gap: 12px; }
 .staffing-plan .stat { flex: 1 1 160px; min-width: 0; }

@@ -98,6 +98,26 @@ from models import init_db
 from test_folder_deletion import FolderDeletionTests
 
 class PostgresDeletionTests(FolderDeletionTests, unittest.TestCase):
+    def test_boundary_consent_migration_atomicity_and_persistence(self):
+        ctx = self.context()
+        payload = dict(name='Consent test', folderId=ctx['folder']['id'], revision=ctx['revision'],
+            availability={'Mon_07':2,'Mon_08':2,'Mon_09':2}, comment='original',
+            allowExtraOpenings=True, allowExtraClosings=False, consentContext=ctx['boundaryContext']['token'])
+        self.assertEqual(self.client.post('/api/availability',json=payload).status_code,200)
+        before = self.overview(ctx['folder']['id'])['submissions'][0]
+        self.assertTrue(before['consent']['allowExtraOpenings'])
+        self.assertEqual(self.client.post('/api/availability',json=dict(payload,consentContext='old',comment='lost')).status_code,409)
+        self.assertEqual(self.overview(ctx['folder']['id'])['submissions'][0],before)
+        with db.connection_context():
+            for column in ['allow_extra_openings','allow_extra_closings','consent_context']:
+                db.execute_sql('ALTER TABLE folderavailability DROP COLUMN ' + column)
+        init_db(); init_db()
+        migrated = self.overview(ctx['folder']['id'])['submissions'][0]
+        self.assertEqual(migrated['availability'],before['availability'])
+        self.assertEqual(migrated['comment'],'original')
+        self.assertFalse(migrated['consent']['allowExtraOpenings'])
+        self.assertIsNone(migrated['consent']['consentContext'])
+
     def setUp(self):
         with db.connection_context():
             db.execute_sql('TRUNCATE TABLE adminsession, savedweekendschedule, savedschedule, '

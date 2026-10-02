@@ -258,9 +258,6 @@ const SETTINGS_GROUPS = [
   ]],
   ["Fairness and solver", [
     ["burdenWeight", "Weight of an unwanted hour"],
-    ["wFairness", "Priority: lift the worst-off person"],
-    ["wPreference", "Priority: total preferred hours granted"],
-    ["wSpread", "Priority: share opening/closing duty"],
     ["solverTimeLimit", "Solver time limit (seconds)"],
   ]],
 ];
@@ -279,6 +276,8 @@ function renderSettings() {
         </div>`).join("")}
       <div class="settings-group">
         <h3>Switches</h3>
+        <label><input type="checkbox" id="cfg_allowPreferredBoundaryExtras" ${CONFIG.allowPreferredBoundaryExtras ? "checked" : ""}> Allow additional fully preferred opening/closing shifts</label>
+        <p class="hint">Explicit employee consent is also required. Fairness comes first, then preferred hours, then fewer overruns, then sharing boundary shifts. The three normal limits still apply without qualifying consent.</p>
         <div style="display:flex;align-items:center;gap:6px;">
           <label style="font-weight:400;"><input type="checkbox" id="cfg_requireLeadDuringOpen"
             ${CONFIG.requireLeadDuringOpen ? "checked" : ""}> <span id="leadOpenLabel"></span></label>
@@ -352,6 +351,7 @@ async function saveSettings() {
   updated.requireLeadDuringLate = $("cfg_requireLeadDuringLate").checked;
   updated.blockClopening = $("cfg_blockClopening").checked;
   updated.allowSelfRegister = $("cfg_allowSelfRegister").checked;
+  updated.allowPreferredBoundaryExtras = $("cfg_allowPreferredBoundaryExtras").checked;
 
   const r = await apiSend("/api/config", "PUT", updated);
   if (!r) return;
@@ -363,6 +363,7 @@ async function saveSettings() {
   CONFIG = r.data;
   $("settingsMsg").innerHTML = `<div class="msg ok">Settings saved.</div>`;
   refreshDiagnostics();
+  if (FOLDER_ID) await renderOverview();
 }
 
 // ---------------- submissions ----------------
@@ -525,6 +526,12 @@ function fairnessTable(rows) {
       unwanted hours, and the solver works to lift whoever sits lowest.</p>`;
 }
 
+function boundarySummary(result) {
+  const rows = (result.boundarySummary || []).filter(r => r.overrun > 0);
+  if (!rows.length) return "";
+  return `<h3>Additional preferred boundary shifts</h3><p>These extras used complete preferred blocks and explicit employee consent captured with this schedule. Extras are optional.</p><div class="scroll-x"><table class="data-table"><thead><tr><th>Employee</th><th>Openings / limit</th><th>Closings / limit</th><th>Combined / limit</th><th>Qualifying assigned credits (opening / closing)</th></tr></thead><tbody>${rows.map(r => `<tr><td>${escapeHtml(r.name)}</td><td>${r.openings} / ${r.caps.openings}</td><td>${r.closings} / ${r.caps.closings}</td><td>${r.openings + r.closings} / ${r.caps.combined}</td><td>${r.qualifyingOpenings} / ${r.qualifyingClosings}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
 async function generateSchedule() {
   if (!FOLDER_ID) return;
   const revision = VIEW_REVISION, folderId = FOLDER_ID, employeeIds = [...SELECTED];
@@ -580,7 +587,7 @@ async function generateSchedule() {
       staffed, every rule satisfied. Fairness floor: ${result.fairnessFloor}.</div>` +
     (result.note ? `<div class="msg warn">${escapeHtml(result.note)}</div>` : "");
 
-  $("fairnessOutput").innerHTML = fairnessTable(result.fairness);
+  $("fairnessOutput").innerHTML = fairnessTable(result.fairness) + boundarySummary(result);
   $("scheduleOutput").innerHTML = renderPrintableTable(result.schedule, result.config);
   $("regenerateBtn").style.display = "inline-block";
   $("downloadBtn").style.display = "inline-block";
@@ -696,6 +703,14 @@ async function downloadExcel() {
     row.unwantedHours, row.dealScore,
   ]));
   fs.columns.forEach((c) => (c.width = 18));
+
+  if (LAST_RESULT.boundarySummary) {
+    const bs = wb.addWorksheet("Boundary consent");
+    bs.addRow(["Extras require explicit consent and complete preferred assigned blocks. Snapshot values below."]);
+    bs.addRow(["Name", "Openings", "Closings", "Opening cap", "Closing cap", "Combined cap", "Opening credits", "Closing credits", "Recorded opening", "Recorded closing", "Effective opening", "Effective closing", "Context", "Feature enabled"]);
+    LAST_RESULT.boundarySummary.forEach(r => bs.addRow([r.name, r.openings, r.closings, r.caps.openings, r.caps.closings, r.caps.combined, r.qualifyingOpenings, r.qualifyingClosings, r.consent.allowExtraOpenings, r.consent.allowExtraClosings, r.consent.effectiveOpenings, r.consent.effectiveClosings, r.consent.consentContext, r.consent.enabled]));
+    bs.columns.forEach(c => c.width = 20);
+  }
 
   const buf = await wb.xlsx.writeBuffer();
   if (revision !== VIEW_REVISION || LAST_RESULT !== result || DELETION_BUSY) return;

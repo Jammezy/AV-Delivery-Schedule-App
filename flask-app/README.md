@@ -91,8 +91,7 @@ hours" objective:
 | Fairness floor off | 17% | 96% | 79 pts | 218 |
 
 Four preferred hours across the whole roster buys a 54-point reduction in
-spread. The four weights (`wFairness`, `wPreference`, `wSpread`, `burdenWeight`)
-are all editable in Settings if you want to retune that trade.
+spread. That comparison describes the historical weighted solver. Weekday priorities are now fixed: fairness first, preferred hours second, fewer cap overruns third, and boundary distribution last. Only `burdenWeight` remains an editable part of the fairness metric.
 
 The Generate tab shows the per-person breakdown, and it's written to a
 **Fairness** sheet in the Excel export so you have something to point at when
@@ -206,15 +205,15 @@ balancing preferences" note.
 
 ## How the solve runs
 
-Two phases. Phase one looks for any legal schedule with no objective, which is
-fast. Phase two feeds that solution back as a hint and spends the rest of the
-time budget improving fairness.
+Weekday generation uses four integer optimization stages under one total deadline.
+A later objective cannot reduce an earlier score. If fairness proof uses the time
+budget, the best feasible result is returned with an explicit unproved-optimality
+note; no refinement can trade fairness away. Later timeouts retain the last valid
+incumbent.
 
-This is about correctness, not just speed. With a single objective-driven solve,
-a week that's perfectly schedulable but slow to optimize returns UNKNOWN at the
-time limit — and the old code reported that to you as "no valid schedule
-exists." Now an unfinished optimization degrades to a valid-but-less-balanced
-schedule with a note, instead of a false impossibility.
+The optional preferred-boundary feature requires separate employee opening and
+closing consent plus supervisor enablement. See the
+[consent implementation, migration, tests, and review guide](PREFERRED_BOUNDARY_CONSENT.md).
 
 ## Other fixes in this version
 

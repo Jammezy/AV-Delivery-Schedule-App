@@ -12,6 +12,8 @@
 # ============================================================
 
 import math
+import time
+from boundary import hours_of, close_hour, required_staff, boundary_context, employee_consent
 from ortools.sat.python import cp_model
 
 UNAVAILABLE = 0
@@ -29,29 +31,6 @@ BURDEN_MAX = 10
 # ------------------------------------------------------------------
 # config / availability helpers
 # ------------------------------------------------------------------
-
-def hours_of(cfg):
-    return list(range(int(cfg["hourStart"]), int(cfg["hourEnd"]) + 1))
-
-
-def close_hour(day, cfg):
-    """Hour this day stops being staffed, or None if it runs to hourEnd."""
-    if day == "Sun":
-        return 17
-    per_day = cfg.get("dayCloseHours") or {}
-    if day in per_day and per_day[day] not in (None, ""):
-        return int(per_day[day])
-    if day == "Fri" and cfg.get("fridayCloseHour") not in (None, ""):
-        return int(cfg["fridayCloseHour"])
-    return None
-
-
-def required_staff(day, h, cfg):
-    ch = close_hour(day, cfg)
-    if ch is not None and h >= ch:
-        return 0
-    return int(cfg["reqStaffOpen"]) if h < int(cfg["lateHourStart"]) else int(cfg["reqStaffLate"])
-
 
 def lead_required(h, cfg):
     """Each switch controls its own window; callers skip unstaffed hours."""
@@ -319,7 +298,16 @@ def analyze(employees, availability, cfg):
     morning_slots = sum(required_staff(d, open_hour, cfg) for d in days)
     evening_slots = sum(required_staff(d, late_hour, cfg) for d in days)
 
+    consent = [employee_consent(e, availability.get(e['name'], {}), cfg) for e in employees]
+
     def cap_check(label, slots, cap, code):
+        kinds = [('openings', 'effectiveOpenings')] if code == 'morningCap' else [('closings', 'effectiveClosings')] if code == 'eveningCap' else [('openings', 'effectiveOpenings'), ('closings', 'effectiveClosings')]
+        credits = sum(len(c['candidates'][kind]) for c in consent for kind, flag in kinds if c[flag])
+        # Safe upper bound: candidates need not coexist. Never reject permitted extras.
+        if credits:
+            if slots > n * int(cap) + credits:
+                blocker(code, '%s: normal caps plus qualifying consent candidates cannot cover demand.' % label)
+            return
         cap = int(cap)
         if cap <= 0 or slots <= 0:
             return
@@ -357,7 +345,7 @@ def analyze(employees, availability, cfg):
         people.append({
             "name": e["name"], "isLead": bool(e.get("isLead")),
             "minHours": int(e.get("minHours") or 0),
-            "maxHours": int(e.get("maxHours") or 40),
+            "maxHours": int(e.get("maxHours", 40)),
             "submitted": submitted, "markedHours": marked,
             "preferredHours": preferred, "workableCeiling": ceiling,
             "perDayCeiling": per_day,
@@ -504,6 +492,8 @@ def _build(employees, availability, cfg, relax=False):
     # --- availability, weekly hours, opening/closing caps
     min_slack = {}
     pref_vars = {}
+    overruns = []
+    blocks = boundary_context(cfg)["blocks"]
     for i, e in enumerate(employees):
         name = e["name"]
         prefs = []
@@ -524,24 +514,25 @@ def _build(employees, availability, cfg, relax=False):
             model.Add(weekly + slack >= lo)
         else:
             model.Add(weekly >= lo)
-        model.Add(weekly <= int(e.get("maxHours") or 40))
+        model.Add(weekly <= int(e.get("maxHours", 40)))
 
-        open_hour = int(cfg["hourStart"])
-        late_hour = int(cfg["lateHourStart"])
-        mornings = [work[(i, d, open_hour)] for d in days
-                    if required_staff(d, open_hour, cfg) > 0]
-        evenings = [work[(i, d, late_hour)] for d in days
-                    if required_staff(d, late_hour, cfg) > 0]
-        if mornings:
-            model.Add(sum(mornings) <= int(cfg["maxMorningShifts"]))
-        if evenings:
-            model.Add(sum(evenings) <= int(cfg["maxEveningShifts"]))
-        if mornings or evenings:
-            model.Add(sum(mornings) + sum(evenings) <= int(cfg["maxMorningPlusEvening"]))
+        consent = employee_consent(e, availability.get(name, {}), cfg)
+        mornings = [work[(i, d, b['openingHour'])] for d, b in blocks.items() if b['openingHour'] is not None]
+        evenings = [work[(i, d, b['closingHour'])] for d, b in blocks.items() if b['closingHour'] is not None]
+        qo = sum(work[(i, d, blocks[d]['openingHour'])] for d in consent['candidates']['openings']) if consent['effectiveOpenings'] else 0
+        qc = sum(work[(i, d, blocks[d]['closingHour'])] for d in consent['candidates']['closings']) if consent['effectiveClosings'] else 0
+        for tag, count, credit, cap in [
+            ('opening', sum(mornings), qo, int(cfg['maxMorningShifts'])),
+            ('closing', sum(evenings), qc, int(cfg['maxEveningShifts'])),
+            ('combined', sum(mornings) + sum(evenings), qo + qc, int(cfg['maxMorningPlusEvening']))]:
+            model.Add(count - credit <= cap)
+            overrun = model.NewIntVar(0, 2 * len(days), '%s_overrun_%d' % (tag, i))
+            model.AddMaxEquality(overrun, [0, count - cap])
+            overruns.append(overrun)
 
     return {
         "model": model, "work": work, "days": days, "hours": hours,
-        "prefVars": pref_vars, "shortfall": shortfall, "minSlack": min_slack,
+        "prefVars": pref_vars, "shortfall": shortfall, "minSlack": min_slack, "overruns": sum(overruns),
     }
 
 
@@ -590,7 +581,7 @@ def _add_fairness(built, employees, availability, cfg):
     for i, e in enumerate(employees):
         prefs = built["prefVars"][i]
         marked = len(prefs)
-        ceiling = min(marked, int(e.get("maxHours") or 40), max_week)
+        ceiling = min(marked, int(e.get("maxHours", 40)), max_week)
         satisfied = sum(prefs) if prefs else 0
         satisfied_exprs.append(satisfied)
 
@@ -626,11 +617,10 @@ def _add_fairness(built, employees, availability, cfg):
     built["meta"] = meta
     built["worst"] = worst
     built["weights"] = weights
-    built["objective"] = (
-        int(cfg.get("wFairness", 100)) * worst
-        + int(cfg.get("wPreference", 2)) * sum(satisfied_exprs)
-        + (int(cfg.get("wSpread", 20)) * sum(spread) if spread else 0)
-    )
+    built['preference'] = sum(satisfied_exprs)
+    built['spread'] = sum(spread)
+    # Legacy weight keys remain readable, but cannot trade away higher priorities.
+    built['objective'] = worst
     return built
 
 
@@ -650,10 +640,10 @@ def fairness_report(work_out, employees, availability, cfg, weights):
             1 for d in days for h in hours
             if level(availability, name, d, h) == PREFERRED and required_staff(d, h, cfg) > 0
         )
-        ceiling = min(marked, int(e.get("maxHours") or 40), max_week)
+        ceiling = min(marked, int(e.get("maxHours", 40)), max_week)
         got = sum(1 for d, h in worked if level(availability, name, d, h) == PREFERRED)
         burden = sum(weights.get((d, h), 0) for d, h in worked)
-        pref_score = int(PREF_SCALE * got / ceiling) if ceiling else PREF_SCALE
+        pref_score = PREF_SCALE * got // ceiling if ceiling else PREF_SCALE
         rows.append({
             "name": name,
             "hours": len(worked),
@@ -701,92 +691,101 @@ def _extract(solver, built, employees):
     return out, weekly
 
 
+def boundary_report(work_out, employees, availability, cfg):
+    blocks = boundary_context(cfg)['blocks']
+    rows = []
+    for e in employees:
+        c = employee_consent(e, availability.get(e['name'], {}), cfg)
+        assigned = {}
+        for kind, key in [('openings', 'openingHour'), ('closings', 'closingHour')]:
+            assigned[kind] = [d for d, b in blocks.items() if b[key] is not None and e['name'] in work_out[d][b[key]]]
+        o, cl = len(assigned['openings']), len(assigned['closings'])
+        qo = len(set(assigned['openings']) & set(c['candidates']['openings'])) if c['effectiveOpenings'] else 0
+        qc = len(set(assigned['closings']) & set(c['candidates']['closings'])) if c['effectiveClosings'] else 0
+        caps = c['caps']
+        over = max(0, o-caps['openings']) + max(0, cl-caps['closings']) + max(0, o+cl-caps['combined'])
+        rows.append(dict(employeeId=e.get('id'), name=e['name'], openings=o, closings=cl,
+                         qualifyingOpenings=qo, qualifyingClosings=qc, caps=caps,
+                         overrun=over, consent=c))
+    return rows
+
+
 def generate_schedule(employees, availability, cfg, seed=None):
-    """Solved in two phases.
+    """Integer lexicographic optimization under one wall-clock deadline.
 
-    Phase 1 looks for any legal schedule with no objective at all, which is
-    fast. Phase 2 hands that solution back as a hint and spends the rest of the
-    budget improving fairness.
-
-    Splitting it this way matters for correctness, not just speed: with a
-    single objective-driven solve, a week that is perfectly schedulable but
-    slow to optimize returns UNKNOWN at the time limit, and the old code
-    reported that to you as 'no valid schedule exists.' Now an unfinished
-    optimization degrades to a valid-but-less-fair schedule instead of a
-    false impossibility.
+    A feasible fairness incumbent is kept if proof consumes the budget. Refinement
+    starts only after proof, so unproved fairness gets all remaining search time.
+    Each completed stage locks its exact integer value before the next objective.
     """
+    started = time.monotonic()
+    deadline = started + float(cfg.get('solverTimeLimit', 30))
     diagnostics = analyze(employees, availability, cfg)
-    if diagnostics["blockers"]:
-        return {"status": "IMPOSSIBLE", "diagnostics": diagnostics}
-
-    budget = float(cfg.get("solverTimeLimit", 30))
-    built = _build(employees, availability, cfg)
-
-    phase1_budget = max(5.0, budget * 0.35)
-    s1, st1 = _solve(built["model"], cfg, seed=seed, budget=phase1_budget)
-    if st1 not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return {
-            "status": "INFEASIBLE",
-            "diagnostics": diagnostics,
-            "relaxation": explain_infeasible(employees, availability, cfg),
-        }
-
-    work_out, weekly = _extract(s1, built, employees)
-    optimized = False
-    elapsed = s1.WallTime()
-
-    _add_fairness(built, employees, availability, cfg)
-    for key, var in built["work"].items():
-        built["model"].AddHint(var, s1.Value(var))
-
-    remaining = max(2.0, budget - elapsed)
-    s2, st2 = _solve(built["model"], cfg, seed=seed,
-                     maximize=built["objective"], budget=remaining)
-    if st2 in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        work_out, weekly = _extract(s2, built, employees)
-        optimized = True
-        elapsed += s2.WallTime()
-
-    weights = built["weights"]
-    fairness = fairness_report(work_out, employees, availability, cfg, weights)
-    days, hours = built["days"], built["hours"]
-
-    if not optimized:
-        note = ("Found a valid schedule, but ran out of time before balancing "
-                "preferences. Raise the solver time limit in Settings for a "
-                "fairer split.")
-    elif st2 == cp_model.OPTIMAL:
-        note = None
-    else:
-        note = ("Valid schedule, balanced as far as the time limit allowed. "
-                "Raising the solver time limit may improve the fairness floor.")
-
+    if diagnostics['blockers']:
+        return {'status': 'IMPOSSIBLE', 'diagnostics': diagnostics}
+    built = _add_fairness(_build(employees, availability, cfg), employees, availability, cfg)
+    model = built['model']
+    incumbent = None
+    stages = []
+    for name, expression, minimize in [('fairness', built['worst'], False),
+                                       ('preference', built['preference'], False),
+                                       ('overruns', built['overruns'], True),
+                                       ('spread', built['spread'], False)]:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        solver, status = _solve(model, cfg, seed=seed, budget=remaining,
+                                minimize=expression if minimize else None,
+                                maximize=None if minimize else expression)
+        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            if incumbent is None:
+                result = {'status': 'INFEASIBLE' if status == cp_model.INFEASIBLE else 'UNKNOWN', 'diagnostics': diagnostics}
+                remaining = deadline - time.monotonic()
+                if status == cp_model.INFEASIBLE and remaining > 0:
+                    result['relaxation'] = explain_infeasible(employees, availability, cfg, budget=remaining)
+                return result
+            break
+        incumbent = _extract(solver, built, employees)
+        score = int(solver.Value(expression))
+        proven = status == cp_model.OPTIMAL
+        stages.append(dict(name=name, score=score, optimal=proven))
+        model.Add(expression <= score if minimize else expression >= score)
+        if not proven:
+            break
+        model.ClearHints()
+        for var in built['work'].values():
+            model.AddHint(var, solver.Value(var))
+    if incumbent is None:
+        return {'status': 'UNKNOWN', 'diagnostics': diagnostics}
+    work_out, weekly = incumbent
+    fairness = fairness_report(work_out, employees, availability, cfg, built['weights'])
+    complete = len(stages) == 4 and all(stage['optimal'] for stage in stages)
+    fairness_proven = bool(stages and stages[0]['optimal'])
     return {
-        "status": "OPTIMAL" if (optimized and st2 == cp_model.OPTIMAL) else "FEASIBLE",
-        "optimized": optimized,
-        "note": note,
-        "work": work_out,
-        "schedule": assign_slots(work_out, employees, cfg),
-        "weeklyHours": weekly,
-        "fairness": fairness,
-        "fairnessFloor": min((r["dealScore"] for r in fairness), default=0),
-        "burdenMap": {d: {h: weights.get((d, h), 0) for h in hours} for d in days},
-        "diagnostics": diagnostics,
-        "solveSeconds": round(elapsed, 2),
+        'status': 'OPTIMAL' if complete else 'FEASIBLE', 'optimized': True,
+        'fairnessOptimal': fairness_proven, 'optimizationStages': stages,
+        'note': None if complete else ('Fairness optimum proven; refinement stopped at the shared time limit.' if fairness_proven else 'Valid schedule; fairness optimality was not proven within the time limit.'),
+        'work': work_out, 'schedule': assign_slots(work_out, employees, cfg),
+        'weeklyHours': weekly, 'fairness': fairness,
+        'fairnessFloor': min((r['dealScore'] for r in fairness), default=0),
+        'boundarySummary': boundary_report(work_out, employees, availability, cfg),
+        'burdenMap': {d: {h: built['weights'].get((d, h), 0) for h in built['hours']} for d in built['days']},
+        'diagnostics': diagnostics, 'solveSeconds': round(time.monotonic() - started, 2),
     }
 
 
-def explain_infeasible(employees, availability, cfg):
+def explain_infeasible(employees, availability, cfg, budget=None):
     """Re-solve allowing understaffing and missed minimums, then report
     exactly where the model had to cheat. This turns 'no valid schedule
     exists' into 'you're one person short Tuesday 7-9AM'."""
+    started = time.monotonic()
     built = _build(employees, availability, cfg, relax=True)
     model = built["model"]
     penalty = (
         100 * sum(built["shortfall"].values())
         + sum(built["minSlack"].values())
     )
-    solver, status = _solve(model, cfg, minimize=penalty)
+    remaining = None if budget is None else max(0.0, budget - (time.monotonic() - started))
+    solver, status = _solve(model, cfg, minimize=penalty, budget=remaining)
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return {
             "solved": False,
