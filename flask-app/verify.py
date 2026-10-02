@@ -39,7 +39,7 @@ def verify(res, emps, avail, cfg):
         for h in HOURS:
             req = solver.required_staff(day,h,cfg); got=len(work[day][h])
             if got!=req: errs.append("staffing %s %d %d!=%d"%(day,h,got,req))
-            if req and h < cfg["lateHourStart"]:
+            if req and solver.lead_required(h, cfg):
                 if not [e for e in emps if e["isLead"] and e["name"] in work[day][h]]:
                     errs.append("no lead %s %d"%(day,h))
     for e in emps:

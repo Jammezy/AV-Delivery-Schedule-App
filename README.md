@@ -64,7 +64,7 @@ The schedule generator is highly configurable. Admins can tweak the following ru
   * `maxEveningShifts`: Max closing shifts per person per week.
   * `maxMorningPlusEvening`: Max combined opening/closing shifts per week.
 * **Clopening:** `blockClopening` prevents scheduling an employee for a closing shift followed by an opening shift the next morning.
-* **Lead Coverage:** `requireLeadDuringOpen` ensures at least one designated "Lead" employee is scheduled during all standard operating hours.
+* **Lead Coverage:** `requireLeadDuringOpen` (on by default) requires a lead in every staffed hour before `lateHourStart`. The independent `requireLeadDuringLate` switch (off by default) requires a lead from `lateHourStart` through the last staffed hour when enabled. Either switch can be used on its own; closed and unstaffed hours are exempt. Settings labels and help follow the configured hours immediately.
 * **Solver Weights:** The trade-off between raising the fairness floor (`wFairness`), granting raw preferred hours (`wPreference`), and sharing opening/closing duties (`wSpread`) can be adjusted.
 
 ## Running the App

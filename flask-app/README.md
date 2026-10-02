@@ -110,7 +110,12 @@ Generate selection; the existing Week check diagnostics still use that selection
 Editing minimum hours shows an **Unsaved preview** in both panels. Save each row
 to commit it; failed saves retain the draft. Invalid minimum inputs suppress the
 preview and show the saved balance. A matching total is a planning aid, not proof
-that availability, lead coverage, and shift rules permit a schedule. The counter
+that availability, lead coverage, and shift rules permit a schedule. Day-hours
+lead coverage (`requireLeadDuringOpen`, on by default) applies before
+`lateHourStart`; late-hours coverage (`requireLeadDuringLate`, off by default)
+is controlled separately. Either switch can be enabled on its own. Only staffed
+hours require coverage, and Settings labels and help follow the configured hours.
+The counter
 does not change solver rules, saved schedules, or weekend generation.
 
 The admin-only `GET /api/staffing-plan` endpoint returns `requiredHours`,
@@ -129,7 +134,7 @@ The blocker list catches things the old pre-check missed:
 
 - An hour where fewer people are available than the staffing requirement, merged
   into ranges so you get "Tue 7AM–9AM" rather than three separate lines.
-- An open hour with no lead available, when a lead is required.
+- A staffed hour with no lead available, when its day-hours or late-hours lead switch requires one.
 - **Headcount arithmetic from your shift caps.** With your defaults, the week
   has 20 opening slots and 8 closing slots, and each person is capped at 2
   opening-plus-closing shifts, so the roster needs at least 14 people. Below
