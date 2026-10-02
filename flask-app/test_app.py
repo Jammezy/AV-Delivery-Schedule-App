@@ -27,6 +27,88 @@ from test_folder_deletion import FolderDeletionTests
 
 
 class AppTests(FolderDeletionTests, unittest.TestCase):
+    def lead_config(self, **changes):
+        cfg = web.get_config()
+        cfg.update(days=['Mon'], hourStart=17, hourEnd=19, lateHourStart=19,
+                   reqStaffOpen=1, reqStaffLate=1, minShiftLength=1, maxShiftLength=3,
+                   maxMorningShifts=5, maxEveningShifts=5, maxMorningPlusEvening=10,
+                   blockClopening=False, solverWorkers=1, solverTimeLimit=5)
+        cfg.update(changes)
+        return cfg
+
+    def test_lead_windows_are_independent_and_follow_boundary(self):
+        solver = web.solver_module
+        roster = [dict(name='Lead', isLead=True, minHours=0, maxHours=3),
+                  dict(name='Staff', isLead=False, minHours=0, maxHours=3)]
+        availability = {name: {f'Mon_{h}': 1 for h in range(17, 20)} for name in ['Lead', 'Staff']}
+        for boundary in [18, 19]:
+            for day_on, late_on in [(True, False), (True, True), (False, False), (False, True)]:
+                with self.subTest(boundary=boundary, day=day_on, late=late_on):
+                    cfg = self.lead_config(lateHourStart=boundary, requireLeadDuringOpen=day_on,
+                                           requireLeadDuringLate=late_on)
+                    result = solver.generate_schedule(roster, availability, cfg, seed=1)
+                    self.assertIn(result['status'], ['OPTIMAL', 'FEASIBLE'])
+                    for h in range(17, 20):
+                        required = day_on if h < boundary else late_on
+                        self.assertEqual(solver.lead_required(h, cfg), required)
+                        if required:
+                            self.assertIn('Lead', result['work']['Mon'][h])
+                        missing = {**availability, 'Lead': {k: v for k, v in availability['Lead'].items() if k != f'Mon_{h}'}}
+                        attempt = solver.generate_schedule(roster, missing, cfg, seed=1)
+                        self.assertEqual(attempt['status'] == 'IMPOSSIBLE', required)
+                        blockers = [b for b in attempt['diagnostics']['blockers'] if b['code'] == 'lead' and b.get('startHour') == h]
+                        self.assertEqual(bool(blockers), required)
+                        if required:
+                            self.assertIn('required then', blockers[0]['message'])
+
+    def test_lead_defaults_old_config_and_boolean_round_trip(self):
+        self.assertTrue(web.get_config()['requireLeadDuringOpen'])
+        self.assertFalse(web.get_config()['requireLeadDuringLate'])
+        with db.connection_context():
+            Config.update(data_json=json.dumps({'requireLeadDuringOpen': False})).execute()
+        self.assertFalse(self.client.get('/api/config').json['requireLeadDuringLate'])
+        for value, expected in [(True, True), (False, False), (1, True), (0, False)]:
+            response = self.client.put('/api/config', headers=self.headers,
+                json={'requireLeadDuringOpen': False, 'requireLeadDuringLate': value})
+            self.assertEqual(response.status_code, 200)
+            cfg = self.client.get('/api/config').json
+            self.assertIs(cfg['requireLeadDuringLate'], expected)
+            self.assertIs(cfg['requireLeadDuringOpen'], False)
+
+    def test_saved_late_lead_setting_drives_next_generation(self):
+        self.assertEqual(self.client.put('/api/config', headers=self.headers,
+            json=self.lead_config(wSpread=0, wFairness=0)).status_code, 200)
+        days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']
+        self.submit('Lead', {f'{d}_{h}': 1 for d in days for h in range(17, 20)})
+        self.submit('Staff', {f'{d}_19': 2 for d in days})
+        for name, lead in [('Lead', True), ('Staff', False)]:
+            self.assertEqual(self.client.put('/api/employees/' + name, headers=self.headers,
+                json={'isLead': lead, 'minHours': 0, 'maxHours': 15}).status_code, 200)
+        folder_id = self.context()['folder']['id']
+        ids = [row['employeeId'] for row in self.overview(folder_id)['submissions']]
+        for enabled in [False, True, False]:
+            self.assertEqual(self.client.put('/api/config', headers=self.headers,
+                json={'requireLeadDuringLate': enabled}).status_code, 200)
+            response = self.client.post('/api/generate', headers=self.headers,
+                json={'folderId': folder_id, 'employeeIds': ids, 'seed': 1})
+            self.assertEqual(response.status_code, 200)
+            result = response.json
+            self.assertIn(result['status'], ['OPTIMAL', 'FEASIBLE'], result)
+            for d in days:
+                self.assertEqual(result['work'][d]['19'], [] if d == 'Fri' else ['Lead'] if enabled else ['Staff'])
+                self.assertEqual(result['work'][d]['17'], ['Lead'])
+            self.assertIs(result['config']['requireLeadDuringLate'], enabled)
+
+    def test_late_leads_exempt_closed_and_zero_staff_hours(self):
+        solver = web.solver_module
+        roster = [dict(name='Lead', isLead=True, minHours=0, maxHours=3)]
+        availability = {'Lead': {'Mon_17': 1, 'Mon_18': 1, 'Fri_17': 1, 'Fri_18': 1}}
+        for changes in [dict(reqStaffLate=0), dict(days=['Fri'], fridayCloseHour=19)]:
+            cfg = self.lead_config(requireLeadDuringLate=True, **changes)
+            result = solver.generate_schedule(roster, availability, cfg, seed=1)
+            self.assertIn(result['status'], ['OPTIMAL', 'FEASIBLE'])
+            self.assertEqual(result['work'][cfg['days'][0]][19], [])
+
     def test_staffing_plan_scope_and_saved_changes(self):
         self.assertEqual(self.client.get('/api/staffing-plan').status_code, 401)
         def plan(query=''):

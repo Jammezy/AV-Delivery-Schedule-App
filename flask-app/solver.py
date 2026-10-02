@@ -53,6 +53,13 @@ def required_staff(day, h, cfg):
     return int(cfg["reqStaffOpen"]) if h < int(cfg["lateHourStart"]) else int(cfg["reqStaffLate"])
 
 
+def lead_required(h, cfg):
+    """Each switch controls its own window; callers skip unstaffed hours."""
+    if h < int(cfg["lateHourStart"]):
+        return bool(cfg.get("requireLeadDuringOpen"))
+    return bool(cfg.get("requireLeadDuringLate"))
+
+
 def level(availability, name, day, hour):
     """0 = can't work, 1 = can work, 2 = wants to work."""
     row = availability.get(name) or {}
@@ -213,17 +220,23 @@ def analyze(employees, availability, cfg):
         }
 
     leads = [e for e in employees if e.get("isLead")]
-    if cfg.get("requireLeadDuringOpen") and not leads:
-        blocker("lead", "A lead is required during every open hour, but nobody on the "
+    if (cfg.get("requireLeadDuringOpen") or cfg.get("requireLeadDuringLate")) and not leads:
+        if cfg.get("requireLeadDuringOpen") and cfg.get("requireLeadDuringLate"):
+            window = "during every staffed hour"
+        elif cfg.get("requireLeadDuringOpen"):
+            window = "before %s" % hour_label(int(cfg["lateHourStart"]))
+        else:
+            window = "during late hours"
+        blocker("lead", "A lead is required %s, but nobody on the "
                         "roster is marked as a lead. Mark at least one person on the "
-                        "Employees tab.")
+                        "Employees tab." % window)
 
     # ---- per-hour coverage --------------------------------------------
     coverage = []
     demand = {d: {} for d in days}
     short_hours = {}       # day -> [hours where available < required]
     tight_hours = {}       # day -> [hours where available == required]
-    no_lead_hours = {}     # day -> [open hours with no lead available]
+    no_lead_hours = {}     # day -> [required lead hours with no lead available]
     unwanted_hours = {}    # day -> [hours nobody marked preferred]
 
     for d in days:
@@ -252,8 +265,7 @@ def analyze(employees, availability, cfg):
                 short_hours.setdefault(d, []).append((h, req - len(can), len(can)))
             elif len(can) == req:
                 tight_hours.setdefault(d, []).append(h)
-            if (cfg.get("requireLeadDuringOpen") and h < int(cfg["lateHourStart"])
-                    and not can_lead):
+            if lead_required(h, cfg) and not can_lead:
                 no_lead_hours.setdefault(d, []).append(h)
             if not want:
                 unwanted_hours.setdefault(d, []).append(h)
@@ -276,7 +288,7 @@ def analyze(employees, availability, cfg):
         for a, b in _merge_runs(hs):
             blocker(
                 "lead",
-                "%s %s: no lead is available, and a lead is required during open hours."
+                "%s %s: no lead is available, and a lead is required then."
                 % (d, span_label(a, b)),
                 day=d, startHour=a, endHour=b,
             )
@@ -441,7 +453,7 @@ def _build(employees, availability, cfg, relax=False):
                 model.Add(staffed + s == req)
             else:
                 model.Add(staffed == req)
-            if h < int(cfg["lateHourStart"]) and cfg.get("requireLeadDuringOpen"):
+            if lead_required(h, cfg):
                 lead_vars = [work[(i, d, h)] for i, e in enumerate(employees) if e.get("isLead")]
                 if lead_vars:
                     model.Add(sum(lead_vars) >= 1)

@@ -279,8 +279,22 @@ function renderSettings() {
         </div>`).join("")}
       <div class="settings-group">
         <h3>Switches</h3>
-        <label style="font-weight:400;"><input type="checkbox" id="cfg_requireLeadDuringOpen"
-          ${CONFIG.requireLeadDuringOpen ? "checked" : ""}> Require a lead during every open hour</label>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <label style="font-weight:400;"><input type="checkbox" id="cfg_requireLeadDuringOpen"
+            ${CONFIG.requireLeadDuringOpen ? "checked" : ""}> <span id="leadOpenLabel"></span></label>
+          <button type="button" class="secondary help-btn" id="leadHelpBtn"
+            aria-label="Help: lead switches" aria-expanded="false" aria-controls="leadHelpPopup"
+            style="border-radius:50%;padding:0 8px;flex-shrink:0;">?</button>
+        </div>
+        <label style="font-weight:400;margin-top:8px;margin-left:22px;"><input type="checkbox" id="cfg_requireLeadDuringLate"
+          ${CONFIG.requireLeadDuringLate ? "checked" : ""}> <span id="leadLateLabel"></span></label>
+        <div id="leadHelpPopup" class="card" style="display:none;max-width:100%;box-sizing:border-box;margin-top:8px;">
+          <p id="leadOpenHelp"></p>
+          <p id="leadLateHelp"></p>
+          <p>The two switches work separately, so you can turn either one on or off on its own.
+            Late hours begin at the time set under "Late hours begin at" in Hours and coverage.</p>
+          <button type="button" class="secondary" id="leadHelpClose">Close</button>
+        </div>
         <label style="font-weight:400;margin-top:8px;"><input type="checkbox" id="cfg_blockClopening"
           ${CONFIG.blockClopening ? "checked" : ""}> Block closing then opening the next morning</label>
         <label style="font-weight:400;margin-top:8px;"><input type="checkbox" id="cfg_allowSelfRegister"
@@ -289,6 +303,44 @@ function renderSettings() {
           <em>start</em> of the final block. 21 means the last shift runs 9–10PM.</p>
       </div>
     </div>`;
+  const updateLeadLabels = () => {
+    const currentHour = key => {
+      const value = $(`cfg_${key}`).value;
+      return value.trim() !== "" && Number.isFinite(Number(value)) ? Number(value) : Number(CONFIG[key]);
+    };
+    const start = currentHour("hourStart"), end = currentHour("hourEnd"), late = currentHour("lateHourStart");
+    const openLabel = `Require a lead from ${hourLabel(start)} to ${hourLabel(late)}`;
+    const lateLabel = `Require a lead during late hours (${hourLabel(late)} to ${hourLabel(end + 1)})`;
+    $("cfg_requireLeadDuringOpen").disabled = late <= start;
+    $("cfg_requireLeadDuringLate").disabled = late > end;
+    $("leadOpenLabel").textContent = late <= start ? "No day hours with the current settings." : openLabel;
+    $("leadLateLabel").textContent = late > end ? "No late hours with the current settings." : lateLabel;
+    $("leadOpenHelp").textContent = late <= start ? "No day hours with the current settings." :
+      `${openLabel}: every staffed hour in this window must include at least one person marked as a lead on the Employees tab. If this is off, the day hours don't need a lead.`;
+    $("leadLateHelp").textContent = late > end ? "No late hours with the current settings." :
+      `${lateLabel}: every staffed late hour must include at least one lead. If this is off, anyone can work ${hourLabel(late)} to ${hourLabel(end + 1)}.`;
+  };
+  for (const key of ["hourStart", "hourEnd", "lateHourStart"]) {
+    $(`cfg_${key}`).addEventListener("input", updateLeadLabels);
+    $(`cfg_${key}`).addEventListener("change", updateLeadLabels);
+  }
+  updateLeadLabels();
+  const helpButton = $("leadHelpBtn"), popup = $("leadHelpPopup");
+  const setHelpOpen = open => {
+    popup.style.display = open ? "block" : "none";
+    helpButton.setAttribute("aria-expanded", String(open));
+  };
+  helpButton.addEventListener("click", () => setHelpOpen(helpButton.getAttribute("aria-expanded") !== "true"));
+  $("leadHelpClose").addEventListener("click", () => { setHelpOpen(false); helpButton.focus(); });
+  const escapeHelp = event => {
+    if (event.key === "Escape" && helpButton.getAttribute("aria-expanded") === "true") {
+      event.stopPropagation();
+      setHelpOpen(false);
+      helpButton.focus();
+    }
+  };
+  helpButton.addEventListener("keydown", escapeHelp);
+  popup.addEventListener("keydown", escapeHelp);
 }
 
 async function saveSettings() {
@@ -297,6 +349,7 @@ async function saveSettings() {
     for (const [key] of fields) updated[key] = Number($(`cfg_${key}`).value);
   }
   updated.requireLeadDuringOpen = $("cfg_requireLeadDuringOpen").checked;
+  updated.requireLeadDuringLate = $("cfg_requireLeadDuringLate").checked;
   updated.blockClopening = $("cfg_blockClopening").checked;
   updated.allowSelfRegister = $("cfg_allowSelfRegister").checked;
 
