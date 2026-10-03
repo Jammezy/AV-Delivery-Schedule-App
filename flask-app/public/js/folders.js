@@ -96,8 +96,10 @@ async function renderFolderOverview(reset = false) {
     <p>Missing submissions: ${data.missing.length ? data.missing.map(escapeHtml).join(", ") : "None"}.</p>`;
   $("overviewArea").querySelectorAll("[data-person]").forEach(btn => {
     const id = Number(btn.dataset.person);
-    btn.onmouseenter = btn.onfocus = () => { PREVIEWED = id; drawViewer(); };
-    btn.onmouseleave = btn.onblur = () => { PREVIEWED = null; drawViewer(); };
+    // A pinned viewer does not change on hover/focus. Keep its Edit button stable
+    // when focus leaves the employee list, so a real pointer click can reach it.
+    btn.onmouseenter = btn.onfocus = () => { PREVIEWED = id; if (PINNED === null) drawViewer(); };
+    btn.onmouseleave = btn.onblur = () => { PREVIEWED = null; if (PINNED === null) drawViewer(); };
     btn.onclick = () => { PINNED = PINNED === id ? null : id; PREVIEWED = null; drawViewer(); };
   });
   drawViewer();

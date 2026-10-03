@@ -291,6 +291,12 @@ test('viewer sorts seven days, pins across hover, unpins, separates missing and 
 test('supervisor editor exposes full collection windows independently of scheduling and preserves saved hours',async()=>{
   const {dom,run,doc}=await admin();
   dom.window.confirm=()=>true;
+  const person=doc.querySelector('[data-person="1"]');person.focus();person.click();
+  const editButton=doc.getElementById('openEditAvailBtn');
+  person.dispatchEvent(new dom.window.FocusEvent('blur'));
+  assert.equal(doc.getElementById('openEditAvailBtn'),editButton);
+  editButton.click();assert.equal(doc.getElementById('editAvailabilityModal').style.display,'block');
+  doc.getElementById('editAvailCancelBtn').click();assert.equal(run('PINNED'),1);
   run(`CONFIG={...CONFIG,hourStart:9,hourEnd:16,dayCloseHours:{Fri:19,Mon:12},fridayCloseHour:19};
     OVERVIEW.availability.Alex={Mon_07:2,Fri_19:1,Fri_20:2,Fri_21:1,Sat_21:2,Sun_16:1};
     openEditAvailabilityModal(OVERVIEW.employees[0]);`);
