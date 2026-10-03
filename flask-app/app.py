@@ -503,8 +503,10 @@ def admin_update_availability():
         if not employee:
             abort(404, "Employee not found.")
 
-        cfg = get_config()
-        valid = {f"{d}_{h:02d}" for d in cfg['availabilityDays'] for h in range(cfg["hourStart"], cfg["hourEnd"] + 1)}
+        # Supervisor collection is wider than weekday scheduling. Closing/staffing
+        # settings still apply in the solvers, not when editing availability.
+        valid = {f"{d}_{h:02d}" for d in ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
+                 for h in range(7, 17 if d == 'Sun' else 22)}
         if any(k not in valid or (type(v) not in (int, bool) or v not in (0, 1, 2)) for k, v in availability.items()):
             abort(400, "Invalid availability time slot.")
 

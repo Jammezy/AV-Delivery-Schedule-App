@@ -306,6 +306,15 @@ Monday-Friday only.
 
 ### Regression checks
 
+The supervisor availability editor and viewer use fixed collection windows:
+Monday–Saturday 7 AM–10 PM and Sunday 7 AM–5 PM. These remain editable even
+when weekday operating hours or day-specific closing times are narrower.
+Saving retains valid collection entries, comments, and employee-recorded consent;
+supervisors cannot grant or reconfirm that consent. Weekday staffing, weekend
+shift definitions, employee-facing restrictions, snapshots, and exports keep
+their existing behavior. Run `node test_supervisor_availability_browser.cjs`
+for disposable desktop/375px editing, persistence, and keyboard checks.
+
 ```sh
 python -m unittest -v test_app
 npm install --no-save jsdom@30.1.0 exceljs@4.4.0

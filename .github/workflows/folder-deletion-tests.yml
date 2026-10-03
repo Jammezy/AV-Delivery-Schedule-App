@@ -48,6 +48,8 @@ jobs:
         if: ${{ !cancelled() }}
       - run: node test_boundary_browser.cjs 2>&1 | tee test-boundary-browser.log
         if: ${{ !cancelled() }}
+      - run: node test_supervisor_availability_browser.cjs 2>&1 | tee test-supervisor-browser.log
+        if: ${{ !cancelled() }}
       - run: python verify.py 2>&1 | tee test-solver.log
         if: ${{ !cancelled() }}
       - uses: actions/github-script@v7
@@ -56,7 +58,7 @@ jobs:
           script: |
             const fs = require('fs');
             let summary = '';
-            for (const kind of ['backend','frontend','postgres','browser','boundary-browser','solver']) {
+            for (const kind of ['backend','frontend','postgres','browser','boundary-browser','supervisor-browser','solver']) {
               const path = `flask-app/test-${kind}.log`;
               if (fs.existsSync(path)) summary += `### ${kind}\n\n\`\`\`text\n${fs.readFileSync(path,'utf8').slice(-13000)}\n\`\`\`\n\n`;
             }

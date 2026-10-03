@@ -60,8 +60,17 @@ async function changeFolder() {
   if (revision !== VIEW_REVISION) return;
   await renderSavedWeekendSchedules();
 }
+// Supervisor collection windows are independent of weekday staffing settings.
+const SUPERVISOR_AVAILABILITY_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+function supervisorAvailabilityHours() {
+  return Array.from({length: 15}, (_, i) => i + 7);
+}
+function supervisorAvailabilityClosed(day, hour) {
+  return hour < 7 || hour >= (day === "Sun" ? 17 : 22);
+}
 function validAvailability(av) {
-  const valid = new Set(CONFIG.availabilityDays.flatMap(d => hours().map(h => `${d}_${String(h).padStart(2, "0")}`)));
+  const valid = new Set(SUPERVISOR_AVAILABILITY_DAYS.flatMap(d => supervisorAvailabilityHours()
+    .filter(h => !supervisorAvailabilityClosed(d, h)).map(h => cellKey(d, h))));
   return Object.fromEntries(Object.entries(av || {}).filter(([k,v]) => valid.has(k) && Number(v) > 0));
 }
 async function renderFolderOverview(reset = false) {
@@ -87,8 +96,10 @@ async function renderFolderOverview(reset = false) {
     <p>Missing submissions: ${data.missing.length ? data.missing.map(escapeHtml).join(", ") : "None"}.</p>`;
   $("overviewArea").querySelectorAll("[data-person]").forEach(btn => {
     const id = Number(btn.dataset.person);
-    btn.onmouseenter = btn.onfocus = () => { PREVIEWED = id; drawViewer(); };
-    btn.onmouseleave = btn.onblur = () => { PREVIEWED = null; drawViewer(); };
+    // A pinned viewer does not change on hover/focus. Keep its Edit button stable
+    // when focus leaves the employee list, so a real pointer click can reach it.
+    btn.onmouseenter = btn.onfocus = () => { PREVIEWED = id; if (PINNED === null) drawViewer(); };
+    btn.onmouseleave = btn.onblur = () => { PREVIEWED = null; if (PINNED === null) drawViewer(); };
     btn.onclick = () => { PINNED = PINNED === id ? null : id; PREVIEWED = null; drawViewer(); };
   });
   drawViewer();
@@ -123,7 +134,8 @@ function drawViewer() {
     $("viewerConsent").textContent = lines.join(" ");
   }
   $("overviewArea").querySelectorAll("[data-person]").forEach(b => b.setAttribute("aria-pressed", String(Number(b.dataset.person) === PINNED)));
-  $("viewerGrid").innerHTML = `<table class="data-table"><thead><tr><th>Time</th>${CONFIG.availabilityDays.map(d => `<th>${d}</th>`).join("")}</tr></thead><tbody>${hours().map(h => `<tr><th>${blockLabel(h)}</th>${CONFIG.availabilityDays.map(d => {
+  $("viewerGrid").innerHTML = `<table class="data-table"><thead><tr><th>Time</th>${SUPERVISOR_AVAILABILITY_DAYS.map(d => `<th>${d}</th>`).join("")}</tr></thead><tbody>${supervisorAvailabilityHours().map(h => `<tr><th>${blockLabel(h)}</th>${SUPERVISOR_AVAILABILITY_DAYS.map(d => {
+    if (supervisorAvailabilityClosed(d, h)) return '<td class="closed" aria-label="Outside collection hours">—</td>';
     const key = `${d}_${String(h).padStart(2,"0")}`;
     const count = data.filter(av => Number(av[key]) > 0).length;
     const level = employee ? Number(data[0][key] || 0) : count > 0 ? 1 : 0;
@@ -167,25 +179,29 @@ function cellKey(day, hour) {
   return `${day}_${String(hour).padStart(2, "0")}`;
 }
 
+function editAvailCellLabel(day, hour, level, closed = false) {
+  return `${day} ${blockLabel(hour)}: ${closed ? "Outside collection hours" : level === 2 ? "Preferred" : level ? "Available" : "Unavailable"}`;
+}
+
 function renderEditAvailGrid() {
   const grid = $("editAvailGrid");
-  grid.style.setProperty("--cols", CONFIG.availabilityDays.length);
+  grid.style.setProperty("--cols", SUPERVISOR_AVAILABILITY_DAYS.length);
   const parts = ['<div class="wg-corner"></div>'];
 
-  for (const day of CONFIG.availabilityDays) {
+  for (const day of SUPERVISOR_AVAILABILITY_DAYS) {
     parts.push(`<button type="button" class="wg-daylabel" data-fillday="${day}" title="Fill or clear ${day}">${escapeHtml(day)}</button>`);
   }
 
-  for (const h of hours()) {
+  for (const h of supervisorAvailabilityHours()) {
     parts.push(`<div class="wg-timelabel">${blockLabel(h)}</div>`);
-    for (const day of CONFIG.availabilityDays) {
+    for (const day of SUPERVISOR_AVAILABILITY_DAYS) {
       const key = cellKey(day, h);
-      const ch = closeHourFor(day, CONFIG);
-      const closed = ch !== null && h >= ch;
+      const closed = supervisorAvailabilityClosed(day, h);
+      const level = closed ? 0 : (editAvailState[key] || 0);
       parts.push(
-        `<button type="button" class="wg-cell" data-key="${key}" data-day="${day}" data-hour="${h}" data-level="${closed ? 0 : (editAvailState[key] || 0)}"
+        `<button type="button" class="wg-cell" data-key="${key}" data-day="${day}" data-hour="${h}" data-level="${level}"
            ${closed ? 'data-closed="1" disabled' : ""}
-           aria-pressed="${Boolean(editAvailState[key])}"></button>`
+           aria-pressed="${Boolean(level)}" aria-label="${editAvailCellLabel(day, h, level, closed)}"></button>`
       );
     }
   }
@@ -204,13 +220,11 @@ function editAvailPaint(cell) {
   }
   cell.dataset.level = editAvailState[key] || 0;
   cell.setAttribute("aria-pressed", String(Boolean(editAvailState[key])));
+  cell.setAttribute("aria-label", editAvailCellLabel(cell.dataset.day, Number(cell.dataset.hour), editAvailState[key] || 0));
 }
 
 function editAvailToggleDay(day) {
-  const open = hours().filter(h => {
-    const ch = closeHourFor(day, CONFIG);
-    return ch === null || h < ch;
-  });
+  const open = supervisorAvailabilityHours().filter(h => !supervisorAvailabilityClosed(day, h));
   const allSet = open.every(h => (editAvailState[cellKey(day, h)] || 0) >= 1);
   for (const h of open) {
     const key = cellKey(day, h);
@@ -354,7 +368,7 @@ function setupFolders() {
   $("activateFolderBtn").onclick = () => update({activate:true});
   $("stopFolderBtn").onclick = () => update({activate:false});
   $("archiveFolderBtn").onclick = () => update({archived:!FOLDERS.find(f => f.id === FOLDER_ID)?.archived});
-  document.addEventListener("click", e => { if (!e.target.closest("#overviewArea")) { PINNED = PREVIEWED = null; drawViewer(); } });
+  document.addEventListener("click", e => { if (!e.target.closest("#overviewArea, #editAvailabilityModal, #editAvailabilityOverlay")) { PINNED = PREVIEWED = null; drawViewer(); } });
   document.addEventListener("keydown", e => { if (e.key === "Escape") { PINNED = PREVIEWED = null; drawViewer(); } });
 }
 
