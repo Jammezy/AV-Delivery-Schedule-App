@@ -31,21 +31,36 @@ function updateConsent() {
   $("boundaryLimits").textContent = `Normal weekly limits: ${caps.openings} openings, ${caps.closings} closings, ${caps.combined} combined.`;
   $("boundaryExplanation").textContent = `Extra shifts are optional and are not guaranteed. Fairness comes first. Only fully preferred blocks can exceed normal limits. Each choice also permits that type of preferred shift to exceed the combined limit of ${caps.combined} opening and closing shifts.`;
   let total = 0;
+  let showSection = false;
   for (const [kind, stem, field, required] of [["openings", "opening", "allowExtraOpenings", "opening"], ["closings", "closing", "allowExtraClosings", "closingRequired"]]) {
     const count = Object.entries(context.blocks).filter(([day, b]) => b[stem].length && b[required].length &&
       b[stem].every(h => state[cellKey(day, h)] === 2) && b[required].every(h => [1,2].includes(state[cellKey(day,h)]))).length;
     total += count;
+    showSection ||= count > caps[kind];
     const box = $(field);
     box.disabled = !count && !box.checked; // A recorded choice can always be cleared.
     $(stem + "ConsentLabel").textContent = `I am okay with more than ${caps[kind]} ${stem} shifts per week, on days when I mark the full ${stem} block preferred.`;
     $(stem + "ConsentNote").textContent = count ? `You marked ${count} fully preferred ${kind}; the normal limit is ${caps[kind]}. These are possible assignments, not a guarantee.` :
       `${box.checked ? "Opted in; no" : "No"} qualifying preferred block currently. Mark every hour of a complete ${stem} block preferred, with enough available hours for a minimum shift.`;
   }
+  // Visibility follows individual caps only. Keep choices independent of the grid.
+  $("boundaryChoices").hidden = !showSection;
   $("boundaryStatus").textContent = [
     total > caps.combined ? `Your ${total} preferred boundary candidates exceed the combined limit of ${caps.combined}, even if neither individual limit is exceeded.` : "",
     !context.enabled ? "Your supervisor has not enabled additional preferred opening/closing shifts. Normal limits currently apply." : "",
     CONSENT_RECONFIRM ? "Reconfirmation needed after settings changed." : ""
   ].filter(Boolean).join(" ");
+  const openings = $("allowExtraOpenings").checked;
+  const closings = $("allowExtraClosings").checked;
+  const hasConsent = openings || closings;
+  $("boundaryConsentManagement").hidden = !(CONSENT_RECONFIRM || (!showSection && hasConsent));
+  $("boundaryConsentSummary").textContent = [
+    `Current choices: additional openings ${openings ? "opted in" : "not opted in"}; additional closings ${closings ? "opted in" : "not opted in"}.`,
+    $("boundaryLimits").textContent,
+    !context.enabled ? "Your supervisor has not enabled additional preferred opening/closing shifts. Normal limits currently apply." : "",
+    CONSENT_RECONFIRM ? "Settings changed. Reconfirm these choices under the current limits, or clear consent. Submit availability to save." : "Submit availability to save any changes to these choices."
+  ].filter(Boolean).join(" ");
+  $("clearBoundaryConsent").hidden = !hasConsent;
   $("reconfirmConsent").hidden = !CONSENT_RECONFIRM;
   $("submitBtn").disabled = SUBMITTING || CONSENT_RECONFIRM || !CONTEXT?.folder;
 }
@@ -337,6 +352,13 @@ async function refreshContext() {
   $("commentInput").oninput = updateCommentCount;
   for (const id of ["allowExtraOpenings", "allowExtraClosings"]) $(id).onchange = updateConsent;
   $("reconfirmConsent").onclick = () => { CONSENT_RECONFIRM = false; updateConsent(); };
+  $("clearBoundaryConsent").onclick = () => {
+    $("allowExtraOpenings").checked = false;
+    $("allowExtraClosings").checked = false;
+    CONSENT_RECONFIRM = false;
+    updateConsent();
+    $("submitBtn").focus();
+  };
   await refreshContext();
   await loadRoster();
   renderGrid();
