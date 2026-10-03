@@ -288,6 +288,91 @@ test('viewer sorts seven days, pins across hover, unpins, separates missing and 
   alex.click(); doc.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Escape'})); assert.equal(run('PINNED'),null);
   dom.window.close();
 });
+test('supervisor editor exposes full collection windows independently of scheduling and preserves saved hours',async()=>{
+  const {dom,run,doc}=await admin();
+  dom.window.confirm=()=>true;
+  const person=doc.querySelector('[data-person="1"]');person.focus();person.click();
+  const editButton=doc.getElementById('openEditAvailBtn');
+  person.dispatchEvent(new dom.window.FocusEvent('blur'));
+  assert.equal(doc.getElementById('openEditAvailBtn'),editButton);
+  editButton.click();assert.equal(doc.getElementById('editAvailabilityModal').style.display,'block');
+  doc.getElementById('editAvailCancelBtn').click();assert.equal(run('PINNED'),1);
+  run(`CONFIG={...CONFIG,hourStart:9,hourEnd:16,dayCloseHours:{Fri:19,Mon:12},fridayCloseHour:19};
+    OVERVIEW.availability.Alex={Mon_07:2,Fri_19:1,Fri_20:2,Fri_21:1,Sat_21:2,Sun_16:1};
+    openEditAvailabilityModal(OVERVIEW.employees[0]);`);
+  const cell=key=>doc.querySelector(`#editAvailGrid [data-key="${key}"]`);
+  assert.equal(doc.querySelectorAll('#editAvailGrid .wg-cell:not([disabled])').length,100);
+  for(const day of ['Mon','Tue','Wed','Thu','Fri','Sat'])for(const h of ['07','21'])assert.equal(cell(`${day}_${h}`).disabled,false);
+  assert.equal(cell('Sun_16').disabled,false);
+  for(const h of [17,18,19,20,21]){assert.equal(cell(`Sun_${h}`).disabled,true);assert.match(cell(`Sun_${h}`).getAttribute('aria-label'),/Outside collection hours/);}
+  assert.equal(cell('Fri_20').dataset.level,'2');assert.equal(cell('Sat_21').dataset.level,'2');
+  assert.equal(cell('Sun_16').dataset.level,'1');assert.equal(cell('Mon_07').dataset.level,'2');
+  const activate=key=>cell(key).dispatchEvent(new dom.window.MouseEvent('click',{bubbles:true,detail:0}));
+  doc.querySelector('#editAvailabilityModal [data-mode="2"]').click();activate('Fri_19');
+  assert.match(cell('Fri_19').getAttribute('aria-label'),/Fri 7PM–8PM: Preferred/);
+  assert.equal(cell('Fri_19').getAttribute('aria-pressed'),'true');
+  doc.querySelector('#editAvailabilityModal [data-mode="0"]').click();activate('Fri_19');
+  assert.match(cell('Fri_19').getAttribute('aria-label'),/Unavailable/);assert.equal(cell('Fri_19').getAttribute('aria-pressed'),'false');
+  doc.querySelector('#editAvailabilityModal [data-mode="1"]').click();activate('Fri_19');
+  assert.match(cell('Fri_19').getAttribute('aria-label'),/Available/);
+  // Pointer painting follows the same collection windows.
+  const grid=doc.getElementById('editAvailGrid');
+  doc.querySelector('#editAvailabilityModal [data-mode="2"]').click();
+  grid.onpointerdown({target:cell('Fri_20'),pointerId:1,preventDefault(){}});
+  doc.elementFromPoint=()=>cell('Fri_21');grid.onpointermove({clientX:0,clientY:0});grid.onpointerup();
+  assert.equal(run('editAvailState.Fri_20'),2);assert.equal(run('editAvailState.Fri_21'),2);
+  activate('Sun_17');assert.equal(run('editAvailState.Sun_17'),undefined);
+  run('editAvailToggleDay("Fri")');assert.equal(run('editAvailState.Fri_21'),2);
+  run('editAvailToggleDay("Fri")');assert.equal(run('editAvailState.Fri_21'),undefined);
+  run('editAvailToggleDay("Sat");editAvailToggleDay("Sun")');
+  assert.equal(run('editAvailState.Sat_21'),2);assert.equal(run('editAvailState.Sun_16'),1);
+  assert.equal(run('editAvailState.Sun_17'),undefined);
+  doc.getElementById('editAvailClearBtn').click();assert.equal(run('Object.keys(editAvailState).length'),0);
+  doc.getElementById('editAvailCancelBtn').click();assert.equal(run('OVERVIEW.availability.Alex.Fri_20'),2);
+  run('PINNED=1;drawViewer()');
+  assert.equal(doc.querySelectorAll('#viewerGrid tbody tr').length,15);
+  const lateRow=doc.querySelectorAll('#viewerGrid tbody tr')[14];
+  assert.equal(lateRow.children[5].textContent,'Available'); // Friday 9–10 PM.
+  assert.equal(lateRow.children[6].textContent,'Preferred');assert.equal(lateRow.children[7].textContent,'—');
+  assert.deepEqual(JSON.parse(run('JSON.stringify(hours())')),[9,10,11,12,13,14,15,16]);
+  assert.equal(run('isClosed("Fri",19)'),true); // Scheduling helper unchanged.
+  dom.window.close();
+});
+
+test('supervisor save round-trips full collection, retains failed drafts and sends no consent fields',async()=>{
+  const {dom,run,doc}=await admin();let captured,fail=true;
+  run(`OVERVIEW.availability.Alex={Mon_07:2,Fri_19:1,Fri_20:2,Fri_21:1,Sat_21:2,Sun_16:1};
+    OVERVIEW.comments.Alex='Keep comment';PINNED=1;
+    refreshDiagnostics=async()=>{};openEditAvailabilityModal(OVERVIEW.employees[0]);`);
+  const saved=JSON.parse(run('JSON.stringify(OVERVIEW)'));
+  dom.window.fetch=async(url,opts)=>{
+    if(opts?.method==='PUT'){
+      captured=JSON.parse(opts.body);
+      if(fail)return {ok:false,status:503,json:async()=>({error:'Retry save'})};
+      saved.availability.Alex=captured.availability;saved.comments.Alex=captured.comment;
+      return {ok:true,status:200,json:async()=>({ok:true})};
+    }
+    return {ok:true,status:200,json:async()=>structuredClone(saved)};
+  };
+  const cell=doc.querySelector('#editAvailGrid [data-key="Tue_07"]');
+  cell.dispatchEvent(new dom.window.MouseEvent('click',{bubbles:true,detail:0}));
+  await doc.getElementById('editAvailSaveBtn').onclick();
+  assert.match(doc.getElementById('editAvailMsg').textContent,/Retry save/);
+  assert.equal(doc.getElementById('editAvailabilityModal').style.display,'block');
+  assert.equal(run('editAvailState.Tue_07'),1);assert.equal(doc.getElementById('editAvailComment').value,'Keep comment');
+  for(const key of ['Fri_19','Fri_20','Fri_21','Sat_21','Sun_16','Mon_07'])assert.ok(captured.availability[key]);
+  assert.equal(captured.folderId,1);assert.equal(captured.employeeId,1);
+  assert.deepEqual(Object.keys(captured).sort(),['availability','comment','employeeId','folderId']);
+  fail=false;await doc.getElementById('editAvailSaveBtn').onclick();
+  assert.equal(doc.getElementById('editAvailabilityModal').style.display,'none');
+  assert.match(doc.getElementById('viewerCaption').textContent,/Pinned: Alex/);
+  run('openEditAvailabilityModal(OVERVIEW.employees[0])');
+  assert.equal(doc.querySelector('#editAvailGrid [data-key="Fri_20"]').dataset.level,'2');
+  assert.equal(doc.querySelector('#editAvailGrid [data-key="Sat_21"]').dataset.level,'2');
+  assert.equal(doc.querySelector('#editAvailGrid [data-key="Sun_16"]').dataset.level,'1');
+  dom.window.close();
+});
+
 test('logout clears private data and discards pending responses',async()=>{
   const {dom,run,doc}=await admin();
   let resolve;
