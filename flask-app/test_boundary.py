@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import test_app
 from test_app import web, db, Employee, FolderAvailability, Config, init_db
-from boundary import boundary_context, consent_status
+from boundary import boundary_context, consent_status, legacy_consent_token
 import solver
 from models import DEFAULT_CONFIG
 from ortools.sat.python import cp_model
@@ -29,14 +29,34 @@ def grant(cfg, employee_id=1, opening=True, closing=False):
 
 
 class BoundarySolverTests(unittest.TestCase):
+    def test_persistent_permission_requalifies_and_maximum_remains_hard(self):
+        cfg = config(days=['Mon'], hourEnd=10, minShiftLength=3, maxShiftLength=4,
+                     allowPreferredBoundaryExtras=True, maxMorningShifts=0, maxMorningPlusEvening=0)
+        grid = {'Mon_07':2, 'Mon_08':2, 'Mon_09':2, 'Mon_10':1}
+        grant(cfg)
+        record = dict(cfg['boundaryConsents']['1'])
+        employee = dict(id=1, name='A', minHours=0, maxHours=4)
+        for minimum, candidates in [(3,['Mon']), (2,['Mon']), (4,[]), (2,['Mon'])]:
+            cfg['minShiftLength'] = minimum
+            status = consent_status(grid, record, cfg)
+            self.assertTrue(status['allowExtraOpenings'])
+            self.assertFalse(status['reconfirmationNeeded'])
+            self.assertEqual(status['candidates']['openings'], candidates)
+            self.assertEqual(status['effectiveOpenings'], bool(candidates))
+            result = solver.generate_schedule([employee], {'A':grid}, cfg)
+            self.assertEqual(result['status'] in ('OPTIMAL','FEASIBLE'), bool(candidates))
+        cfg['maxShiftLength'] = 2
+        self.assertEqual(boundary_context(cfg)['token'], record['consentContext'])
+        self.assertNotIn(solver.generate_schedule([employee], {'A':grid}, cfg)['status'], ('OPTIMAL','FEASIBLE'))
+
     def test_context_only_changes_with_agreement(self):
         cfg = config()
         token = boundary_context(cfg)['token']
         for change in [dict(allowPreferredBoundaryExtras=True), dict(wFairness=0),
-                       dict(burdenWeight=8), dict(reqStaffOpen=2), dict(maxShiftLength=3)]:
+                       dict(burdenWeight=8), dict(reqStaffOpen=2), dict(maxShiftLength=3), dict(minShiftLength=1)]:
             self.assertEqual(boundary_context(dict(cfg, **change))['token'], token)
         for change in [dict(maxMorningShifts=1), dict(maxEveningShifts=0),
-                       dict(maxMorningPlusEvening=0), dict(minShiftLength=1),
+                       dict(maxMorningPlusEvening=0),
                        dict(dayCloseHours={'Mon': 8}), dict(hourStart=8)]:
             self.assertNotEqual(boundary_context(dict(cfg, **change))['token'], token)
 
@@ -202,6 +222,128 @@ class ConsentApiTests(unittest.TestCase):
 
     def record(self):
         return self.client.get('/api/availability/A',query_string={'folderId':self.context()['folder']['id']}).json
+
+    def permission_payload(self, employee_id=None, folder_id=None):
+        folder_id = folder_id or self.context()['folder']['id']
+        overview = self.overview(folder_id)
+        row = next(s for s in overview['submissions'] if employee_id is None or s['employeeId'] == employee_id)
+        return dict(employeeId=row['employeeId'], folderId=folder_id,
+                    permissionVersion=row['permissionVersion'], consentContext=overview['boundaryContext']['token'],
+                    allowExtraOpenings=row['consent']['allowExtraOpenings'],
+                    allowExtraClosings=row['consent']['allowExtraClosings'])
+
+    def save_permissions(self, payload):
+        return self.client.put('/api/admin/boundary-permissions',headers=self.headers,json=payload)
+
+    def test_shift_length_changes_persist_permission_and_current_candidates(self):
+        self.submit()
+        self.client.put('/api/config',headers=self.headers,json={'allowPreferredBoundaryExtras':True})
+        token = self.record()['consent']['consentContext']
+        for minimum, candidates in [(2,['Mon']), (4,[]), (2,['Mon'])]:
+            self.assertEqual(self.client.put('/api/config',headers=self.headers,json={'minShiftLength':minimum}).status_code,200)
+            status = self.record()['consent']
+            self.assertEqual(status['consentContext'], token)
+            self.assertTrue(status['allowExtraOpenings'])
+            self.assertFalse(status['reconfirmationNeeded'])
+            self.assertEqual(status['candidates']['openings'], candidates)
+        self.client.put('/api/config',headers=self.headers,json={'maxShiftLength':4})
+        self.assertFalse(self.record()['consent']['reconfirmationNeeded'])
+        for settings in [{'maxMorningPlusEvening':3}, {'hourStart':8}]:
+            self.client.put('/api/config',headers=self.headers,json=settings)
+            self.assertTrue(self.record()['consent']['reconfirmationNeeded'])
+            self.submit()
+
+    def test_supervisor_independent_choices_preserve_data_and_employee_can_update(self):
+        self.submit(allowExtraOpenings=False)
+        self.submit(name='B',allowExtraOpenings=False)
+        fid = self.context()['folder']['id']
+        other = self.create_folder('Other',False)['id']
+        with db.connection_context():
+            original = FolderAvailability.get(FolderAvailability.employee == self.record()['employeeId'])
+            FolderAvailability.create(employee=original.employee_id,folder=other,data_json='{"Tue_08":1}',comment='other')
+        unrelated = self.overview(other)
+        b = self.overview(fid)['submissions'][1]
+        before = self.record()
+        for openings, closings in [(True,False),(False,True),(True,True),(False,False)]:
+            payload = dict(self.permission_payload(),allowExtraOpenings=openings,allowExtraClosings=closings)
+            response = self.save_permissions(payload)
+            self.assertEqual(response.status_code,200,response.json)
+            row = self.record()
+            self.assertEqual((row['consent']['allowExtraOpenings'],row['consent']['allowExtraClosings']),(openings,closings))
+            for key in ['availability','comment','submittedAt']:
+                self.assertEqual(row[key],before[key])
+            self.assertFalse(row['consent']['effectiveOpenings']) # Global feature remains off.
+        self.assertEqual(self.overview(other),unrelated)
+        self.assertEqual(self.overview(fid)['submissions'][1],b)
+        self.save_permissions(dict(self.permission_payload(),allowExtraOpenings=True,allowExtraClosings=True))
+        self.assertEqual(self.submit(allowExtraOpenings=False,allowExtraClosings=False).status_code,200)
+        self.assertFalse(self.record()['consent']['allowExtraOpenings'])
+
+    def test_supervisor_validation_conflicts_and_transaction_rollback(self):
+        from peewee import OperationalError
+        self.submit()
+        payload = self.permission_payload()
+        before = self.record()
+        self.assertEqual(self.client.put('/api/admin/boundary-permissions',json=payload).status_code,401)
+        for field, value in [('allowExtraOpenings',1),('allowExtraClosings','true'),('employeeId',True),
+                             ('folderId','1'),('availability',{}),('comment','other')]:
+            self.assertEqual(self.save_permissions(dict(payload,**{field:value})).status_code,400)
+        self.assertEqual(self.save_permissions(dict(payload,employeeId=9999)).status_code,404)
+        self.assertEqual(self.save_permissions(dict(payload,folderId=9999)).status_code,404)
+        self.assertEqual(self.record(),before)
+        with patch.object(FolderAvailability,'save',side_effect=OperationalError('disposable injected failure')):
+            self.assertEqual(self.save_permissions(dict(payload,allowExtraOpenings=False)).status_code,503)
+        self.assertEqual(self.record(),before)
+        # Shift-length updates alone do not conflict with an explicit supervisor save.
+        self.client.put('/api/config',headers=self.headers,json={'minShiftLength':2,'maxShiftLength':5})
+        self.assertEqual(self.save_permissions(payload).status_code,200)
+        payload = self.permission_payload()
+        self.submit(comment='concurrent employee edit')
+        self.assertEqual(self.save_permissions(payload).status_code,409)
+        payload = self.permission_payload()
+        self.client.put('/api/config',headers=self.headers,json={'maxMorningShifts':3})
+        self.assertEqual(self.save_permissions(payload).status_code,409)
+        self.assertTrue(self.record()['consent']['reconfirmationNeeded'])
+        self.assertEqual(self.save_permissions(self.permission_payload()).status_code,200)
+        self.assertFalse(self.record()['consent']['reconfirmationNeeded'])
+        payload = self.permission_payload()
+        self.save_permissions(dict(payload,allowExtraClosings=True))
+        self.assertEqual(self.save_permissions(payload).status_code,409)
+
+    def test_legacy_token_migration_only_upgrades_current_agreements(self):
+        self.submit()
+        self.submit(name='B')
+        with db.connection_context():
+            cfg = web.get_config()
+            FolderAvailability.update(consent_context=legacy_consent_token(cfg)).where(
+                FolderAvailability.employee == Employee.get(Employee.name=='A')).execute()
+            stale = legacy_consent_token(dict(cfg,maxMorningShifts=99))
+            FolderAvailability.update(consent_context=stale).where(
+                FolderAvailability.employee == Employee.get(Employee.name=='B')).execute()
+        init_db();init_db()
+        rows = self.overview(self.context()['folder']['id'])['submissions']
+        self.assertFalse(rows[0]['consent']['reconfirmationNeeded'])
+        self.assertTrue(rows[0]['consent']['allowExtraOpenings'])
+        self.assertTrue(rows[1]['consent']['reconfirmationNeeded'])
+        self.assertEqual(rows[1]['consent']['consentContext'],stale)
+        self.client.put('/api/config',headers=self.headers,json={'minShiftLength':4})
+        self.assertFalse(self.record()['consent']['reconfirmationNeeded'])
+
+    def test_supervisor_permissions_captured_in_generation_and_historical_snapshot(self):
+        self.submit(allowExtraOpenings=False)
+        payload = self.permission_payload()
+        self.save_permissions(dict(payload,allowExtraOpenings=True,allowExtraClosings=True))
+        def generate(roster,availability,cfg,seed=None):
+            self.assertTrue(cfg['boundaryConsents'][str(payload['employeeId'])]['allowExtraClosings'])
+            self.save_permissions(dict(self.permission_payload(),allowExtraClosings=False))
+            return {'status':'FEASIBLE','work':{},'schedule':{},'fairness':[]}
+        with patch.object(web.solver_module,'generate_schedule',side_effect=generate):
+            response = self.client.post('/api/generate',headers=self.headers,
+                json={'folderId':payload['folderId'],'employeeIds':[payload['employeeId']]})
+        self.assertEqual(response.status_code,200,response.json)
+        saved = self.client.get(f'/api/folders/{payload["folderId"]}/schedules/{response.json["savedScheduleId"]}',headers=self.headers).json
+        self.assertTrue(saved['submissions'][0]['consent']['allowExtraClosings'])
+        self.assertFalse(self.record()['consent']['allowExtraClosings'])
 
     def test_defaults_validation_atomic_conflict_and_reconfirmation(self):
         self.assertFalse(self.context()['config']['allowPreferredBoundaryExtras'])

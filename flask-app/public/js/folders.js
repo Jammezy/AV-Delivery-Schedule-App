@@ -2,6 +2,7 @@ let FOLDERS = [], FOLDER_ID = null, ACTIVE_FOLDER = null;
 let SELECTED = new Set(), OVERVIEW = null, PINNED = null, PREVIEWED = null;
 let VIEW_REVISION = 0;
 let OVERVIEW_REQUEST = 0;
+const PERMISSION_DRAFTS = new Map();
 
 function $(id) { return document.getElementById(id); }
 
@@ -25,6 +26,7 @@ function renderFolderControls() {
   $("folderStatus").textContent = active ? `Accepting submissions: ${active.name}` : "No folder is accepting submissions.";
 }
 function clearFolderView() {
+  PERMISSION_DRAFTS.clear();
   VIEW_REVISION++;
   PINNED = PREVIEWED = null;
   SELECTED = new Set(); OVERVIEW = null; LAST_DIAG = null;
@@ -92,7 +94,7 @@ async function renderFolderOverview(reset = false) {
   updateSelectionCount();
   $("overviewArea").innerHTML = `<p>Hover or focus to preview. Click to pin; click again, outside, or press Escape to clear.</p>
     <div class="availability-viewer"><div class="viewer-list">${submitted.map(e => `<button class="secondary viewer-person" data-person="${e.id}" aria-pressed="false">${escapeHtml(e.name)} — ${Object.keys(validAvailability(data.availability[e.name])).length} hrs</button>`).join("")}</div>
-    <div><p id="viewerCaption" role="status"></p><p id="viewerComment"></p><div id="viewerConsent" role="status"></div><div class="scroll-x" id="viewerGrid"></div></div></div>
+    <div><p id="viewerCaption" role="status"></p><p id="viewerComment"></p><div id="viewerConsent" role="status"></div><div id="viewerPermissionControls"></div><div class="scroll-x" id="viewerGrid"></div></div></div>
     <p>Missing submissions: ${data.missing.length ? data.missing.map(escapeHtml).join(", ") : "None"}.</p>`;
   $("overviewArea").querySelectorAll("[data-person]").forEach(btn => {
     const id = Number(btn.dataset.person);
@@ -134,6 +136,7 @@ function drawViewer() {
     $("viewerConsent").textContent = lines.join(" ");
   }
   $("overviewArea").querySelectorAll("[data-person]").forEach(b => b.setAttribute("aria-pressed", String(Number(b.dataset.person) === PINNED)));
+  renderPermissionControls(employee);
   $("viewerGrid").innerHTML = `<table class="data-table"><thead><tr><th>Time</th>${SUPERVISOR_AVAILABILITY_DAYS.map(d => `<th>${d}</th>`).join("")}</tr></thead><tbody>${supervisorAvailabilityHours().map(h => `<tr><th>${blockLabel(h)}</th>${SUPERVISOR_AVAILABILITY_DAYS.map(d => {
     if (supervisorAvailabilityClosed(d, h)) return '<td class="closed" aria-label="Outside collection hours">—</td>';
     const key = `${d}_${String(h).padStart(2,"0")}`;
@@ -146,6 +149,57 @@ function drawViewer() {
   if (editBtn) {
     editBtn.onclick = () => openEditAvailabilityModal(employee);
   }
+}
+
+function renderPermissionControls(employee) {
+  const host = $("viewerPermissionControls");
+  if (!host) return;
+  host.innerHTML = "";
+  const submission = OVERVIEW.submissions?.find(s => s.employeeId === employee?.id);
+  if (!employee || PINNED !== employee.id || !submission || !OVERVIEW.boundaryContext) return;
+  const key = `${FOLDER_ID}:${employee.id}`;
+  let draft = PERMISSION_DRAFTS.get(key);
+  if (!draft || (!draft.dirty && !draft.busy)) {
+    draft = {openings: submission.consent.allowExtraOpenings, closings: submission.consent.allowExtraClosings,
+      version: submission.permissionVersion, context: OVERVIEW.boundaryContext.token,
+      dirty: false, busy: false, message: draft?.message || "", conflict: false};
+    PERMISSION_DRAFTS.set(key, draft);
+  }
+  host.innerHTML = `<fieldset><legend>Additional-shift permissions</legend>
+    <p id="permissionHelp">Permission allows optional assignments when preferred availability and all scheduling constraints qualify. Shift-length changes keep permission recorded and recalculate eligible days. Saving explicitly confirms these choices against the current caps and boundaries. Employees can still change their own choices.</p>
+    <label style="display:block"><input id="supervisorExtraOpenings" type="checkbox" aria-describedby="permissionHelp" ${draft.openings ? "checked" : ""} ${draft.busy ? "disabled" : ""}> Allow additional fully preferred opening shifts</label>
+    <label style="display:block"><input id="supervisorExtraClosings" type="checkbox" aria-describedby="permissionHelp" ${draft.closings ? "checked" : ""} ${draft.busy ? "disabled" : ""}> Allow additional fully preferred closing shifts</label>
+    <p>Exception feature: ${submission.consent.enabled ? "enabled" : "disabled"}. ${submission.consent.reconfirmationNeeded ? "Reconfirmation required; an explicit save confirms the selected choices." : "No reconfirmation required."}</p>
+    <button id="saveBoundaryPermissions" ${draft.busy ? "disabled" : ""}>Save additional-shift permissions</button>
+    <button id="reloadBoundaryPermissions" class="secondary" ${draft.conflict ? "" : "hidden"}>Reload saved permissions (discard draft)</button>
+    <p id="permissionSaveStatus" role="status">${escapeHtml(draft.message)}</p></fieldset>`;
+  for (const [id, field] of [["supervisorExtraOpenings", "openings"], ["supervisorExtraClosings", "closings"]]) {
+    $(id).onchange = event => { draft[field] = event.target.checked; draft.dirty = true; };
+  }
+  $("reloadBoundaryPermissions").onclick = async () => {
+    PERMISSION_DRAFTS.delete(key);
+    await renderOverview();
+  };
+  $("saveBoundaryPermissions").onclick = async () => {
+    const revision = VIEW_REVISION, folderId = FOLDER_ID;
+    draft.busy = true; draft.message = "Saving…";
+    renderPermissionControls(employee);
+    const response = await apiSend("/api/admin/boundary-permissions", "PUT", {
+      employeeId: employee.id, folderId, permissionVersion: draft.version, consentContext: draft.context,
+      allowExtraOpenings: draft.openings, allowExtraClosings: draft.closings
+    });
+    if (revision !== VIEW_REVISION || folderId !== FOLDER_ID || !response) return;
+    draft.busy = false;
+    if (response.ok) {
+      draft.dirty = false; draft.message = "Additional-shift permissions saved."; draft.conflict = false;
+      OVERVIEW.submissions = OVERVIEW.submissions.map(s => s.employeeId === employee.id ? response.data.submission : s);
+      await renderOverview();
+    } else {
+      draft.dirty = true; draft.conflict = response.status === 409;
+      draft.message = response.data.error || "Could not save permissions. Please retry.";
+      renderPermissionControls(OVERVIEW.employees.find(e => e.id === (PINNED ?? PREVIEWED)));
+    }
+  };
 }
 
 // --- Edit Availability logic ---

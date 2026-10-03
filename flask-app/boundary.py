@@ -42,8 +42,21 @@ def boundary_context(cfg):
                           'closings': int(cfg['maxEveningShifts']),
                           'combined': int(cfg['maxMorningPlusEvening'])},
                  'minShiftLength': minimum, 'blocks': blocks}
-    token = hashlib.sha256(json.dumps(agreement, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    # Permission concerns caps and actual staffed boundaries, not the minimum
+    # used to qualify a particular availability grid.
+    stable = {'caps': agreement['caps'], 'boundaries': {
+        day: {'openingHour': b['openingHour'], 'closing': b['closing'],
+              'staffedEnd': max((h for h in hours_of(cfg) if required_staff(day, h, cfg) > 0), default=None)}
+        for day, b in blocks.items()}}
+    token = 'v2:' + hashlib.sha256(json.dumps(stable, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     return dict(agreement, token=token, enabled=cfg.get('allowPreferredBoundaryExtras') is True)
+
+
+def legacy_consent_token(cfg):
+    """Old token for the exact current configuration; used only for migration."""
+    context = boundary_context(cfg)
+    agreement = {k: context[k] for k in ('caps', 'minShiftLength', 'blocks')}
+    return hashlib.sha256(json.dumps(agreement, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
 
 def consent_status(grid, recorded, cfg):
@@ -64,8 +77,8 @@ def consent_status(grid, recorded, cfg):
     return {'allowExtraOpenings': opening, 'allowExtraClosings': closing,
             'consentContext': recorded.get('consentContext'), 'contextCurrent': current,
             'reconfirmationNeeded': (opening or closing) and not current,
-            'effectiveOpenings': context['enabled'] and current and opening,
-            'effectiveClosings': context['enabled'] and current and closing,
+            'effectiveOpenings': context['enabled'] and current and opening and bool(candidates['openings']),
+            'effectiveClosings': context['enabled'] and current and closing and bool(candidates['closings']),
             'candidates': candidates, 'caps': context['caps'], 'enabled': context['enabled']}
 
 

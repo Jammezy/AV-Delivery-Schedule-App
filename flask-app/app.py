@@ -168,8 +168,46 @@ def freeze_consent(cfg, rows, folder_id):
 
 def submission_json(row, cfg=None):
     return {"employeeId": row.employee_id, "availability": row.get_data(),
+            'permissionVersion': permission_version(row),
             'consent': consent_status(json.loads(row.data_json), recorded_consent(row), cfg or get_config()),
             "comment": row.comment, "submittedAt": row.submitted_at.isoformat() + "Z"}
+
+
+def permission_version(row):
+    # Include the availability and agreement as well as stable record identities:
+    # concurrent employee/admin edits and reused folder IDs cannot overwrite a draft.
+    value = [row.employee_id, row.folder_id, row.folder.created_at.isoformat(),
+             row.data_json, row.comment, row.submitted_at.isoformat(), recorded_consent(row)]
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+@app.put('/api/admin/boundary-permissions')
+@require_admin
+def update_boundary_permissions():
+    data = body()
+    if any(k in data for k in ('availability', 'comment')):
+        abort(400, 'Save availability and comments through the availability editor.')
+    if any(type(data.get(k)) is not int for k in ('employeeId', 'folderId')):
+        abort(400, 'Employee and folder IDs are required.')
+    if any(type(data.get(k)) is not bool for k in ('allowExtraOpenings', 'allowExtraClosings')):
+        abort(400, 'Both permission choices must be explicit booleans.')
+    with write_transaction():
+        folder = folder_or_404(data['folderId'])
+        row = FolderAvailability.get_or_none((FolderAvailability.folder == folder) &
+            (FolderAvailability.employee == data['employeeId']))
+        if row is None:
+            abort(404, 'No submission for this employee in this folder.')
+        cfg = get_config()
+        if data.get('permissionVersion') != permission_version(row):
+            abort(409, 'This employee submission changed. Reload permissions before saving.')
+        if data.get('consentContext') != boundary_context(cfg)['token']:
+            abort(409, 'Caps or opening/closing boundaries changed. Reload permissions before saving.')
+        row.allow_extra_openings = data['allowExtraOpenings']
+        row.allow_extra_closings = data['allowExtraClosings']
+        row.consent_context = boundary_context(cfg)['token']
+        row.save(only=[FolderAvailability.allow_extra_openings, FolderAvailability.allow_extra_closings,
+                       FolderAvailability.consent_context])
+    return jsonify(submission=submission_json(row, cfg))
 
 
 
@@ -476,7 +514,7 @@ def get_all_availability():
     return jsonify(folder=folder_json(folder), employees=employees, availability=availability,
         submittedAt={r.employee.name: r.submitted_at.isoformat() + "Z" for r in rows},
         comments={r.employee.name: r.comment for r in rows},
-        submissions=[submission_json(r, cfg) for r in rows],
+        submissions=[submission_json(r, cfg) for r in rows], boundaryContext=boundary_context(cfg),
         missing=[e["name"] for e in employees if e["name"] not in availability])
 
 @app.put("/api/admin/availability")
@@ -484,7 +522,7 @@ def get_all_availability():
 def admin_update_availability():
     data = body()
     if any(k in data for k in ('allowExtraOpenings', 'allowExtraClosings', 'consentContext', 'consent')):
-        abort(400, 'Only employees can record or reconfirm boundary consent.')
+        abort(400, 'Save additional-shift permissions through the separate permission controls.')
     employee_id = data.get("employeeId")
     folder_id = data.get("folderId")
     availability = data.get("availability")
