@@ -30,7 +30,7 @@ def grant(cfg, employee_id=1, opening=True, closing=False):
 
 class BoundarySolverTests(unittest.TestCase):
     def test_persistent_permission_requalifies_and_maximum_remains_hard(self):
-        cfg = config(days=['Mon'], hourEnd=10, minShiftLength=3, maxShiftLength=4,
+        cfg = config(days=['Mon'], hourEnd=10, lateHourStart=11, minShiftLength=3, maxShiftLength=4,
                      allowPreferredBoundaryExtras=True, maxMorningShifts=0, maxMorningPlusEvening=0)
         grid = {'Mon_07':2, 'Mon_08':2, 'Mon_09':2, 'Mon_10':1}
         grant(cfg)

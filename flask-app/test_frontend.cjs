@@ -306,7 +306,7 @@ test('supervisor permission drafts survive failures and selection changes; expli
   assert.equal(el('supervisorExtraOpenings').checked,true);
   assert.equal(el('supervisorExtraClosings').checked,false);
   // Successful explicit confirmation does not include availability or comments.
-  dom.window.fetch=async(url,options)=>({ok:true,status:200,json:async()=>options ?
+  dom.window.fetch=async(url,options)=>({ok:true,status:200,json:async()=>options?.method==='PUT' ?
     (captured=JSON.parse(options.body),{submission:data.submissions[0]}):structuredClone(data)});
   await el('saveBoundaryPermissions').onclick();assert.equal(Object.hasOwn(captured,'availability'),false);
   assert.equal(Object.hasOwn(captured,'comment'),false);

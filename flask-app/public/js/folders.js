@@ -193,6 +193,7 @@ function renderPermissionControls(employee) {
     if (response.ok) {
       draft.dirty = false; draft.message = "Additional-shift permissions saved."; draft.conflict = false;
       OVERVIEW.submissions = OVERVIEW.submissions.map(s => s.employeeId === employee.id ? response.data.submission : s);
+      drawViewer();
       await renderOverview();
     } else {
       draft.dirty = true; draft.conflict = response.status === 409;
@@ -422,7 +423,13 @@ function setupFolders() {
   $("activateFolderBtn").onclick = () => update({activate:true});
   $("stopFolderBtn").onclick = () => update({activate:false});
   $("archiveFolderBtn").onclick = () => update({archived:!FOLDERS.find(f => f.id === FOLDER_ID)?.archived});
-  document.addEventListener("click", e => { if (!e.target.closest("#overviewArea, #editAvailabilityModal, #editAvailabilityOverlay")) { PINNED = PREVIEWED = null; drawViewer(); } });
+  document.addEventListener("click", e => {
+    // A save may redraw its button before the click bubbles to document. Use
+    // the captured event path so that an internal click still preserves the pin.
+    if (!e.composedPath().some(node => ["overviewArea", "editAvailabilityModal", "editAvailabilityOverlay"].includes(node.id))) {
+      PINNED = PREVIEWED = null; drawViewer();
+    }
+  });
   document.addEventListener("keydown", e => { if (e.key === "Escape") { PINNED = PREVIEWED = null; drawViewer(); } });
 }
 
