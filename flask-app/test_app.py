@@ -174,6 +174,96 @@ class AppTests(FolderDeletionTests, unittest.TestCase):
     def overview(self, folder_id):
         return self.client.get(f"/api/availability?folderId={folder_id}", headers=self.headers).json
 
+    def test_supervisor_collection_windows_preserve_records_under_narrow_settings(self):
+        ctx = self.context()
+        fid = ctx['folder']['id']
+        initial = {'Mon_07': 2, 'Mon_08': 2, 'Mon_09': 2, 'Fri_19': 1, 'Sat_21': 2, 'Sun_16': 1}
+        response = self.client.post('/api/availability', json=dict(name='Alex', folderId=fid,
+            revision=ctx['revision'], availability=initial, comment='Keep comment',
+            allowExtraOpenings=True, allowExtraClosings=False,
+            consentContext=ctx['boundaryContext']['token']))
+        self.assertEqual(response.status_code, 200)
+        original = self.overview(fid)['submissions'][0]
+        eid = original['employeeId']
+        other = self.create_folder('Other folder', False)['id']
+        other_payload = dict(employeeId=eid, folderId=other, availability={'Tue_08': 1}, comment='Other')
+        self.assertEqual(self.client.put('/api/admin/availability', headers=self.headers, json=other_payload).status_code, 200)
+        other_before = self.overview(other)['submissions']
+        self.seed_snapshots(fid)
+        before_snapshots = self.client.get(f'/api/folders/{fid}/schedules', headers=self.headers).json
+        self.assertEqual(self.client.put('/api/config', headers=self.headers, json=dict(
+            hourStart=9, hourEnd=16, lateHourStart=17, minShiftLength=1, maxShiftLength=6,
+            dayCloseHours={'Fri': 13})).status_code, 200)
+        grid = {f'{d}_{h:02d}': 1 + h % 2 for d in ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+                for h in range(7, 17 if d == 'Sun' else 22)}
+        payload = dict(employeeId=eid, folderId=fid, availability=grid, comment=original['comment'])
+        self.assertEqual(self.client.put('/api/admin/availability', headers=self.headers, json=payload).status_code, 200)
+        saved = self.overview(fid)['submissions'][0]
+        self.assertEqual(saved['availability'], grid)
+        self.assertEqual(saved['comment'], original['comment'])
+        for key in ['allowExtraOpenings', 'allowExtraClosings', 'consentContext']:
+            self.assertEqual(saved['consent'][key], original['consent'][key])
+        self.assertEqual(self.overview(other)['submissions'], other_before)
+        self.assertEqual(self.client.get(f'/api/folders/{fid}/schedules', headers=self.headers).json, before_snapshots)
+        # Employee endpoint remains governed by its existing configured collection grid.
+        self.assertEqual(self.submit(availability=grid).status_code, 400)
+
+    def test_supervisor_collection_rejects_invalid_slots_and_preserves_failed_save(self):
+        self.submit()
+        fid = self.context()['folder']['id']
+        original = self.overview(fid)['submissions'][0]
+        payload = dict(employeeId=original['employeeId'], folderId=fid,
+                       availability=original['availability'], comment='Draft')
+        self.assertEqual(self.client.put('/api/admin/availability', json=payload).status_code, 401)
+        for key, level in [('Mon_06', 1), ('Mon_22', 1), ('Sat_22', 1), ('Sun_17', 1),
+                           ('Sun_21', 1), ('Bad_07', 1), ('Fri_7', 1), ('Fri_19', 3),
+                           ('Fri_19', '2'), ('Fri_19', 1.5), ('Fri_19', None)]:
+            with self.subTest(key=key, level=level):
+                bad = dict(payload, availability={**payload['availability'], key: level})
+                self.assertEqual(self.client.put('/api/admin/availability', headers=self.headers, json=bad).status_code, 400)
+                self.assertEqual(self.overview(fid)['submissions'][0], original)
+        for field in ['allowExtraOpenings', 'allowExtraClosings', 'consentContext', 'consent']:
+            self.assertEqual(self.client.put('/api/admin/availability', headers=self.headers,
+                json=dict(payload, **{field: True})).status_code, 400)
+        for update, expected in [(dict(comment='x' * 100), 400), (dict(employeeId=99999), 404),
+                                 (dict(folderId=99999), 404), (dict(employeeId=True), 400)]:
+            self.assertEqual(self.client.put('/api/admin/availability', headers=self.headers,
+                json=dict(payload, **update)).status_code, expected)
+        from peewee import OperationalError
+        with patch.object(FolderAvailability, 'save', side_effect=OperationalError('Injected save failure')):
+            self.assertEqual(self.client.put('/api/admin/availability', headers=self.headers, json=payload).status_code, 503)
+        self.assertEqual(self.overview(fid)['submissions'][0], original)
+
+    def test_supervisor_saved_weekend_hours_do_not_expand_weekday_scheduling(self):
+        self.submit()
+        fid = self.context()['folder']['id']
+        eid = self.overview(fid)['submissions'][0]['employeeId']
+        settings = dict(hourStart=9, hourEnd=16, lateHourStart=17, reqStaffOpen=1,
+            reqStaffLate=0, minShiftLength=1, maxShiftLength=8, requireLeadDuringOpen=False,
+            requireLeadDuringLate=False, blockClopening=False, maxMorningShifts=5,
+            maxEveningShifts=5, maxMorningPlusEvening=10, dayCloseHours={'Fri': 13},
+            solverWorkers=1, solverTimeLimit=3)
+        self.assertEqual(self.client.put('/api/config', headers=self.headers, json=settings).status_code, 200)
+        grid = {f'{d}_{h:02d}': 1 for d in ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+                for h in range(7, 17 if d == 'Sun' else 22)}
+        self.assertEqual(self.client.put('/api/admin/availability', headers=self.headers,
+            json=dict(employeeId=eid, folderId=fid, availability=grid, comment='Full window')).status_code, 200)
+        result = self.client.post('/api/generate', headers=self.headers,
+            json=dict(folderId=fid, employeeIds=[eid], seed=1)).json
+        self.assertIn(result['status'], ['OPTIMAL', 'FEASIBLE'])
+        self.assertEqual(set(result['work']), {'Mon', 'Tue', 'Wed', 'Thu', 'Fri'})
+        for day, hours in result['work'].items():
+            self.assertEqual({int(h) for h in hours}, set(range(9, 17)))
+            for hour, names in hours.items():
+                if day == 'Fri' and int(hour) >= 13:
+                    self.assertEqual(names, [])
+        weekend = self.client.post('/api/generate_weekend', headers=self.headers,
+            json=dict(folderId=fid, config=dict(start_date='2026-10-02', end_date='2026-10-04',
+                fixed_assignments={'friday_evening': eid}, rotating_employees=[]))).json
+        friday = next(a for a in weekend['assignments'] if a['shift']['key'] == 'friday_evening')
+        self.assertEqual(friday['assigned'], eid)
+        self.assertEqual(self.overview(fid)['submissions'][0]['availability'], grid)
+
     def test_logout_revokes_server_token_and_protected_routes(self):
         self.assertEqual(self.client.get("/api/folders").status_code, 401)
         self.assertEqual(self.client.post("/api/admin/logout", headers=self.headers).status_code, 200)
