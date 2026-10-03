@@ -44,6 +44,13 @@ async function check(viewport) {
     await page.goto('http://127.0.0.1:5097/admin.html');
     await page.locator('#passwordInput').fill('browser-test');await page.locator('#loginBtn').click();
     await page.locator('[data-person="1"]').waitFor({state:'attached'});
+    // The dashboard initially selects the newest folder (our isolation fixture).
+    // Select the record being edited explicitly instead of relying on list order.
+    const selectFixtureFolder = async()=>{
+      await page.locator('#folderSelect').selectOption('1');
+      await page.waitForFunction(()=>FOLDER_ID===1 && OVERVIEW?.folder?.id===1 && document.querySelector('[data-person="1"]'));
+    };
+    await selectFixtureFolder();
     await page.locator('[data-tab="overview"]').click();
     await page.locator('[data-person="1"]').click();
     const login = await page.request.post('http://127.0.0.1:5097/api/admin/login',{data:{password:'browser-test'}});
@@ -129,6 +136,7 @@ async function check(viewport) {
     assert.equal(await cell('Sun_16').getAttribute('data-level'),'1');
     await page.locator('#editAvailCancelBtn').click();
     await page.reload();await page.locator('[data-person="1"]').waitFor({state:'attached'});
+    await selectFixtureFolder();
     await page.locator('[data-tab="overview"]').click();await page.locator('[data-person="1"]').click();
     await open();assert.equal(await cell('Fri_21').getAttribute('data-level'),'2');
     console.log(`PASS supervisor full-window availability editing, persistence, keyboard and layout: ${viewport.width}px`);
