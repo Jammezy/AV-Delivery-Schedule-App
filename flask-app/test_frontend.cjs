@@ -90,9 +90,10 @@ test('consent visibility uses individual complete-block caps and preserves hidde
   setBlocks(1,0);assert.equal(el('boundaryChoices').hidden,false);
   setBlocks(0,1);assert.equal(el('boundaryChoices').hidden,false);
   // A longer minimum changes the server's blocks. Available padding suffices for closing.
-  ctx.config.minShiftLength=4;ctx.boundaryContext.token='longer';
+  ctx.config.minShiftLength=4; // Qualification changes without changing the agreement.
   for(const b of Object.values(ctx.boundaryContext.blocks)){b.opening=[7,8,9,10];b.closingRequired=[18,19,20,21];}
   setBlocks(1,0);await run('refreshContext()');assert.equal(el('boundaryChoices').hidden,true);
+  assert.equal(el('reconfirmConsent').hidden,true);assert.equal(el('submitBtn').disabled,false);
   run('state.Mon_10=2;updateTally()');assert.equal(el('boundaryChoices').hidden,false);
   setBlocks(0,1);assert.equal(el('boundaryChoices').hidden,true);
   run('state.Mon_18=1;updateTally()');assert.equal(el('boundaryChoices').hidden,false);
@@ -273,6 +274,51 @@ async function admin() {
   await run('renderOverview(true)');
   return {dom,run,doc:dom.window.document};
 }
+test('supervisor permission drafts survive failures and selection changes; explicit saves carry versions',async()=>{
+  const {dom,run,doc}=await admin(), el=id=>doc.getElementById(id);
+  const consent={allowExtraOpenings:true,allowExtraClosings:false,enabled:false,reconfirmationNeeded:true,
+    candidates:{openings:[],closings:[]},caps:{openings:2,closings:1,combined:2}};
+  const data={...overview,boundaryContext:{token:'current'},submissions:[
+    {employeeId:1,permissionVersion:'a',consent},
+    {employeeId:2,permissionVersion:'b',consent:{...consent,allowExtraOpenings:false,allowExtraClosings:true}}]};
+  run(`OVERVIEW=${JSON.stringify(data)};PINNED=1;drawViewer()`);
+  assert.equal(el('supervisorExtraOpenings').checked,true);
+  assert.equal(el('supervisorExtraClosings').checked,false);
+  assert.match(el('viewerPermissionControls').textContent,/disabled/);
+  el('supervisorExtraOpenings').click();el('supervisorExtraClosings').click();
+  run('PINNED=2;drawViewer()');assert.equal(el('supervisorExtraClosings').checked,true);
+  assert.equal(el('supervisorExtraOpenings').checked,false);
+  run('PINNED=1;drawViewer()');assert.equal(el('supervisorExtraClosings').checked,true);
+  assert.equal(el('supervisorExtraOpenings').checked,false);
+  let captured;
+  dom.window.fetch=async(url,options)=>({ok:false,status:409,json:async()=>{
+    captured=JSON.parse(options.body);return {error:'Submission changed'};}});
+  await el('saveBoundaryPermissions').onclick();
+  assert.equal(captured.employeeId,1);assert.equal(captured.folderId,1);
+  assert.equal(captured.permissionVersion,'a');assert.equal(captured.consentContext,'current');
+  assert.equal(captured.allowExtraOpenings,false);assert.equal(captured.allowExtraClosings,true);
+  assert.equal(el('supervisorExtraClosings').checked,true);
+  assert.equal(el('reloadBoundaryPermissions').hidden,false);
+  assert.match(el('permissionSaveStatus').textContent,/Submission changed/);
+  dom.window.fetch=async()=>({ok:true,status:200,json:async()=>structuredClone(data)});
+  await run('renderOverview()');assert.equal(el('supervisorExtraOpenings').checked,false);
+  await el('reloadBoundaryPermissions').onclick();
+  assert.equal(el('supervisorExtraOpenings').checked,true);
+  assert.equal(el('supervisorExtraClosings').checked,false);
+  // Successful explicit confirmation does not include availability or comments.
+  dom.window.fetch=async(url,options)=>({ok:true,status:200,json:async()=>options?.method==='PUT' ?
+    (captured=JSON.parse(options.body),{submission:data.submissions[0]}):structuredClone(data)});
+  await el('saveBoundaryPermissions').onclick();assert.equal(Object.hasOwn(captured,'availability'),false);
+  assert.equal(Object.hasOwn(captured,'comment'),false);
+  assert.match(el('permissionSaveStatus').textContent,/saved/);
+  // A late save response after a folder switch must not recreate private controls.
+  let resolve;
+  dom.window.fetch=()=>new Promise(r=>resolve=r);
+  const pending=el('saveBoundaryPermissions').onclick();run('clearFolderView();FOLDER_ID=2');
+  resolve({ok:true,status:200,json:async()=>({submission:data.submissions[0]})});await pending;
+  assert.equal(run('PERMISSION_DRAFTS.size'),0);assert.equal(el('viewerPermissionControls'),null);
+  run('clearSession()');assert.equal(run('PERMISSION_DRAFTS.size'),0);dom.window.close();
+});
 test('viewer sorts seven days, pins across hover, unpins, separates missing and escapes comments',async()=>{
   const {dom,run,doc}=await admin();
   const [alex,blair,casey]=doc.querySelectorAll('[data-person]');

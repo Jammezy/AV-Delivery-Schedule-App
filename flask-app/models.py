@@ -242,6 +242,12 @@ def init_db():
                 FolderAvailability.create(employee=employee, folder=imported,
                     data_json=row.data_json, submitted_at=row.submitted_at)
             SubmissionState.create(id=1, active_folder=imported, revision=1)
+        # Upgrade only agreements that were valid immediately before this release.
+        # Stale/null records retain their choices and their reconfirmation state.
+        from boundary import boundary_context, legacy_consent_token
+        cfg = get_config()
+        FolderAvailability.update(consent_context=boundary_context(cfg)['token']).where(
+            FolderAvailability.consent_context == legacy_consent_token(cfg)).execute()
     if not db.is_closed():
         db.close()
 

@@ -113,6 +113,7 @@ function isClosed(day, h, cfg = CONFIG) {
 
 // ---------------- auth ----------------
 function clearSession() {
+  PERMISSION_DRAFTS.clear();
   STAFFING_PLAN = null; PLAN_REQUEST++; PLAN_STATUS = ""; EMPLOYEE_DRAFTS.clear();
   $("diagnosticsStaffingPlan").innerHTML = $("employeesStaffingPlan").innerHTML = "";
   TOKEN = null; CONFIG = null; EMPLOYEES = []; LAST_DIAG = null;

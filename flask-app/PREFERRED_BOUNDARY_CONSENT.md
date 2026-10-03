@@ -35,15 +35,25 @@ minimum shift is longer. A too-short staffed day cannot create a shortened
 minimum. Friday closing before the evening start creates no closing candidate.
 Invalid or missing levels do not qualify in the consent helper.
 
-The server hashes canonical caps, minimum shift length, and day-specific blocks.
-Changing these requires reconfirmation while retaining the recorded choices.
+The versioned server agreement hashes canonical caps and actual staffed opening/closing boundaries.
+Minimum and maximum shift lengths are excluded, including minimum-derived opening
+blocks and closing padding. Shift-length changes recalculate candidates without
+invalidating permission. Cap and actual boundary changes require reconfirmation
+while retaining the recorded choices.
 Staffing count changes that leave the blocks unchanged, solver settings, and
 feature enablement do not invalidate the agreement. The server recomputes the
 context inside the same write transaction as the existing folder revision check,
 grid, comment, choices, and timestamp. Stale submissions receive HTTP 409 without
 partial writes. The form preserves the draft and requires explicit reconfirmation.
-Legacy payloads without choices save false. Admin edits preserve choices and reject
-consent fields. Changes to availability immediately change qualifying candidates.
+Legacy payloads without choices save false. Availability-only admin edits preserve
+choices and reject consent fields. Separate authenticated supervisor controls allow
+explicit independent grants, revocations, or reconfirmation in the selected folder.
+Their dedicated PUT `/api/admin/boundary-permissions` validates strict booleans,
+current agreement, and a submission version inside the serialized write transaction.
+Concurrent availability, comment, permission, or cap/boundary changes return 409.
+Viewing does not reconfirm. Failed saves retain drafts; explicit reload discards
+a conflict draft. Employees remain free to update their choices. Changes to
+availability immediately change qualifying candidates, without clearing permission.
 
 Generation freezes the selected folder's consent, config, and submissions under
 the existing lock; solver work occurs outside the transaction. The saved snapshot
@@ -102,7 +112,11 @@ removed. `burdenWeight` still defines the fairness metric.
 
 Startup adds the three columns if absent using Peewee's SQLite/PostgreSQL
 migrators inside the existing serialized migration transaction. Existing rows
-receive false/false/null. Repeated startup is safe; no table reset or production
+receive false/false/null. Existing legacy tokens matching the exact current old
+agreement are upgraded to the stable versioned token. Null or stale tokens remain
+unchanged, so a prior cap/boundary invalidation cannot silently reactivate consent.
+Migration cannot infer why an already stale historical token became stale; these
+records retain the existing actionable reconfirmation requirement. Repeated startup is safe; no table reset or production
 data operation is required. Before a future deployment, follow the existing backup
 and restore verification procedure. This feature branch does not deploy or change
 Render/Neon settings.
@@ -124,6 +138,8 @@ python verify.py
 python test_postgres.py
 node test_deletion_browser.cjs
 node test_boundary_browser.cjs
+node test_supervisor_availability_browser.cjs
+node test_boundary_permissions_browser.cjs
 ```
 
 Install `requirements.txt` and the existing test dependencies

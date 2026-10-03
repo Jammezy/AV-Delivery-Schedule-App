@@ -29,7 +29,7 @@ function updateConsent() {
   if (!context) return;
   const caps = context.caps;
   $("boundaryLimits").textContent = `Normal weekly limits: ${caps.openings} openings, ${caps.closings} closings, ${caps.combined} combined.`;
-  $("boundaryExplanation").textContent = `Extra shifts are optional and are not guaranteed. Fairness comes first. Only fully preferred blocks can exceed normal limits. Each choice also permits that type of preferred shift to exceed the combined limit of ${caps.combined} opening and closing shifts.`;
+  $("boundaryExplanation").textContent = `Extra shifts are optional and are not guaranteed. Fairness comes first. Permission stays recorded when shift lengths change; qualifying blocks use the current minimum. Only fully preferred blocks can exceed normal limits. Each choice also permits that type of preferred shift to exceed the combined limit of ${caps.combined} opening and closing shifts.`;
   let total = 0;
   let showSection = false;
   for (const [kind, stem, field, required] of [["openings", "opening", "allowExtraOpenings", "opening"], ["closings", "closing", "allowExtraClosings", "closingRequired"]]) {
