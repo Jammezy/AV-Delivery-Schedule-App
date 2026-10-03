@@ -40,7 +40,14 @@ async function check(viewport) {
     }
     browser=await chromium.launch({headless:true});
     const page=await browser.newPage({viewport});
-    await page.goto('http://127.0.0.1:5098/');
+    // Hold configuration to verify the entire fieldset starts hidden, without a flash.
+    let releaseContext;
+    const contextGate=new Promise(resolve=>releaseContext=resolve);
+    await page.route('**/api/submission-context',async route=>{await contextGate;await route.continue();});
+    await page.goto('http://127.0.0.1:5098/',{waitUntil:'domcontentloaded'});
+    assert.equal(await page.locator('#boundaryChoices').isVisible(),false);
+    releaseContext();
+
     await page.waitForFunction(()=>typeof document.querySelector('#loadBtn').onclick==='function');
     await page.locator('#nameInput').fill('Alex');await page.locator('#loadBtn').click();
     await page.waitForFunction(()=>document.querySelector('#openingConsentNote').textContent.includes('3 fully preferred'));
@@ -52,6 +59,24 @@ async function check(viewport) {
     await page.locator('#submitBtn').click();await page.waitForFunction(()=>document.querySelector('#msgArea').textContent.includes('Saved'));
     await page.locator('#loadBtn').click();await page.waitForFunction(()=>document.querySelector('#msgArea').textContent.includes('Loaded'));
     assert.equal(await page.locator('#allowExtraOpenings').isChecked(),true);
+    // Keyboard erasing/painting, day fill, copying and clearing all recalculate visibility.
+    await page.locator('[data-mode="0"]').click();
+    await page.locator('[data-key="Wed_07"]').focus();await page.keyboard.press('Space');
+    assert.equal(await page.locator('#boundaryChoices').isVisible(),false);
+    assert.equal(await page.locator('#allowExtraOpenings').isChecked(),true);
+    assert.equal(await page.locator('#boundaryConsentManagement').isVisible(),true);
+    await page.locator('[data-mode="2"]').click();
+    await page.locator('[data-key="Wed_07"]').focus();await page.keyboard.press('Space');
+    assert.equal(await page.locator('#boundaryChoices').isVisible(),true);
+    await page.locator('[data-fillday="Wed"]').click();
+    assert.equal(await page.locator('#boundaryChoices').isVisible(),false);
+    await page.locator('#copyMonBtn').click();
+    assert.equal(await page.locator('#boundaryChoices').isVisible(),true);
+    page.once('dialog',dialog=>dialog.accept());await page.locator('#clearAllBtn').click();
+    assert.equal(await page.locator('#boundaryChoices').isVisible(),false);
+    assert.equal(await page.locator('#allowExtraOpenings').isChecked(),true);
+    await page.locator('#loadBtn').click();
+    await page.waitForFunction(()=>document.querySelector('#boundaryChoices').hidden===false);
     await page.locator('#boundaryChoices').scrollIntoViewIfNeeded();
     fs.mkdirSync(path.join(__dirname,'test-browser-output'),{recursive:true});
     await page.screenshot({path:path.join(__dirname,`test-browser-output/boundary-employee-${viewport.width}.png`),fullPage:true});
@@ -82,7 +107,25 @@ async function check(viewport) {
     await page.locator('#nameInput').fill('Alex');await page.locator('#loadBtn').click();
     await page.locator('#reconfirmConsent').waitFor({state:'visible'});
     assert.equal(await page.locator('#submitBtn').isDisabled(),true);
-    await page.locator('#reconfirmConsent').click();await page.locator('#allowExtraOpenings').uncheck();
+    assert.equal(await page.locator('#boundaryChoices').isVisible(),false); // Equality at 3.
+    assert.equal(await page.locator('#allowExtraOpenings').isChecked(),true);
+    assert.match(await page.locator('#boundaryConsentSummary').innerText(),/3 openings/);
+    await page.locator('#reconfirmConsent').focus();await page.keyboard.press('Enter');
+    assert.equal(await page.locator('#submitBtn').isDisabled(),false);
+    // Existing refresh receives saved supervisor caps and preserves the draft choice.
+    await page.request.put('http://127.0.0.1:5098/api/config',{headers,data:{maxMorningShifts:2}});
+    await page.evaluate(()=>refreshContext());
+    assert.equal(await page.locator('#boundaryChoices').isVisible(),true);
+    assert.equal(await page.locator('#allowExtraOpenings').isChecked(),true);
+    await page.request.put('http://127.0.0.1:5098/api/config',{headers,data:{maxMorningShifts:3}});
+    await page.evaluate(()=>refreshContext());
+    assert.equal(await page.locator('#boundaryChoices').isVisible(),false);
+    const managementBox=await page.locator('#boundaryConsentManagement').boundingBox();
+    assert.ok(managementBox.x>=0&&managementBox.x+managementBox.width<=viewport.width+1);
+    await page.screenshot({path:path.join(__dirname,`test-browser-output/boundary-hidden-consent-${viewport.width}.png`),fullPage:true});
+    await page.locator('#clearBoundaryConsent').focus();await page.keyboard.press('Enter');
+    assert.equal(await page.locator('#allowExtraOpenings').isChecked(),false);
+    assert.equal(await page.locator('#submitBtn').isDisabled(),false);
     await page.locator('#submitBtn').click();await page.waitForFunction(()=>document.querySelector('#msgArea').textContent.includes('Saved'));
     const saved=await (await page.request.get(`http://127.0.0.1:5098/api/folders/1/schedules/${generated.savedScheduleId}`,{headers})).json();
     assert.equal(saved.result.config.maxMorningShifts,2);

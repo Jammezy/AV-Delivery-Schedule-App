@@ -13,6 +13,16 @@ generation is unchanged.
 The employee reload and authenticated supervisor submission response include both
 recorded choices and effective status. The selected-employee viewer explains
 disabled settings, missing qualifying blocks, and reconfirmation requirements.
+The employee's additional-shifts fieldset starts hidden and appears only when
+complete preferred opening candidates exceed `maxMorningShifts` or complete
+preferred closing candidates exceed `maxEveningShifts`. Equality and a
+combined-only overrun do not reveal it. Visibility uses the current server-supplied
+blocks and caps and updates after grid edits, reloads, and context refreshes,
+independently of feature enablement. Showing or hiding never changes either
+choice. A compact status outside the fieldset keeps existing choices clearable
+and required reconfirmation actionable, including when no block qualifies.
+Clearing consent explicitly clears both choices; submit availability to persist it.
+
 Public submission context contains definitions, not other employees' consent.
 Employee identity remains the application's existing name-based identification;
 this feature does not introduce employee authentication.

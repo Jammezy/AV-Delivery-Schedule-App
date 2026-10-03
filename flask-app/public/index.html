@@ -60,7 +60,7 @@
     <div id="dayNotes"></div>
   </div>
 
-  <fieldset class="card" id="boundaryChoices" aria-describedby="boundaryExplanation">
+  <fieldset class="card" id="boundaryChoices" aria-describedby="boundaryExplanation" hidden>
     <legend>Additional preferred opening and closing shifts</legend>
     <p id="boundaryLimits"></p>
     <p id="boundaryExplanation"></p>
@@ -69,8 +69,14 @@
     <label><input type="checkbox" id="allowExtraClosings" aria-describedby="closingConsentNote"> <span id="closingConsentLabel"></span></label>
     <p id="closingConsentNote" role="status"></p>
     <p id="boundaryStatus" role="status"></p>
-    <button type="button" id="reconfirmConsent" class="secondary" hidden>Reconfirm these choices under the current limits</button>
   </fieldset>
+  <div class="card" id="boundaryConsentManagement" hidden>
+    <p id="boundaryConsentSummary" role="status"></p>
+    <div class="row">
+      <button type="button" id="clearBoundaryConsent" class="secondary" hidden>Clear additional-shift consent</button>
+      <button type="button" id="reconfirmConsent" class="secondary" hidden>Reconfirm these choices under the current limits</button>
+    </div>
+  </div>
   <div class="card"><label for="commentInput">Comments (optional)</label>
     <textarea id="commentInput" rows="2" aria-describedby="commentCount"></textarea>
     <p id="commentCount" role="status">0 / 99 characters</p></div>

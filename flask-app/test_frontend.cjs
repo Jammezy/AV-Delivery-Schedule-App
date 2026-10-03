@@ -50,6 +50,62 @@ test('boundary controls count complete blocks, preserve choices, reconfirm confl
   dom.window.close();
 });
 
+test('consent visibility uses individual complete-block caps and preserves hidden draft choices', async () => {
+  const dom = new JSDOM(fs.readFileSync(__dirname+'/public/index.html','utf8'), {url:'http://localhost/',runScripts:'outside-only'});
+  const run = code => vm.runInContext(code,dom.getInternalVMContext()), el=id=>dom.window.document.getElementById(id);
+  assert.equal(el('boundaryChoices').hidden,true); // Hidden before config or scripts arrive.
+  assert.equal(el('boundaryConsentManagement').hidden,true);
+  dom.window.confirm=()=>true;
+  dom.window.HTMLElement.prototype.scrollIntoView=()=>{};
+  const days=['Mon','Tue','Wed','Thu','Fri'];
+  let ctx={folder:{id:1},revision:1,config:{...config,minShiftLength:3,hourEnd:21},boundaryContext:{token:'original',enabled:false,caps:{openings:2,closings:1,combined:2},
+    blocks:Object.fromEntries(days.map(d=>[d,{opening:[7,8,9],closing:[19,20,21],closingRequired:[19,20,21]}]))}};
+  let captured;
+  dom.window.fetch=async(url,opts)=>({ok:true,json:async()=>structuredClone(url==='/api/submission-context'?ctx:
+    url==='/api/roster'?{names:[]}:(captured=JSON.parse(opts.body),{availableHours:0,preferredHours:0}))});
+  await run(fs.readFileSync(__dirname+'/public/js/employee.js','utf8'));
+  const setBlocks=(o,c)=> {
+    const grid={};
+    for(const d of days.slice(0,o))for(const h of [7,8,9])grid[`${d}_${h.toString().padStart(2,'0')}`]=2;
+    for(const d of days.slice(0,c))for(const h of [19,20,21])grid[`${d}_${h}`]=2;
+    run(`state=${JSON.stringify(grid)};updateTally()`);
+  };
+  for(const [o,c,visible] of [[0,0,false],[2,1,false],[3,0,true],[0,2,true],[3,2,true]]) {
+    setBlocks(o,c);assert.equal(!el('boundaryChoices').hidden,visible,`${o} openings, ${c} closings`);
+    assert.equal(el('allowExtraOpenings').checked,false);assert.equal(el('allowExtraClosings').checked,false);
+  }
+  setBlocks(2,1);assert.match(el('boundaryStatus').textContent,/exceed the combined limit/);
+  assert.equal(el('boundaryChoices').hidden,true);
+  setBlocks(3,0);run('state.Wed_09=1;updateTally()');assert.equal(el('boundaryChoices').hidden,true);
+  run('state.Wed_09=2;updateTally()');assert.equal(el('boundaryChoices').hidden,false);
+  el('allowExtraOpenings').click();setBlocks(0,0);
+  assert.equal(el('boundaryChoices').hidden,true);assert.equal(el('allowExtraOpenings').checked,true);
+  assert.equal(el('boundaryConsentManagement').hidden,false);assert.match(el('boundaryConsentSummary').textContent,/openings opted in/);
+  el('nameInput').value='Alex';await run('submitAvailability()');assert.equal(captured.allowExtraOpenings,true);assert.equal(captured.allowExtraClosings,false);
+  ctx.boundaryContext.caps.openings=0;ctx.boundaryContext.caps.closings=0;ctx.boundaryContext.token='zero';
+  await run('refreshContext()');assert.equal(el('boundaryChoices').hidden,true);
+  assert.equal(el('reconfirmConsent').hidden,false);assert.equal(el('reconfirmConsent').closest('#boundaryChoices'),null);
+  assert.equal(el('submitBtn').disabled,true);assert.equal(el('allowExtraOpenings').checked,true);
+  el('reconfirmConsent').click();assert.equal(el('submitBtn').disabled,false);
+  setBlocks(1,0);assert.equal(el('boundaryChoices').hidden,false);
+  setBlocks(0,1);assert.equal(el('boundaryChoices').hidden,false);
+  // A longer minimum changes the server's blocks. Available padding suffices for closing.
+  ctx.config.minShiftLength=4;ctx.boundaryContext.token='longer';
+  for(const b of Object.values(ctx.boundaryContext.blocks)){b.opening=[7,8,9,10];b.closingRequired=[18,19,20,21];}
+  setBlocks(1,0);await run('refreshContext()');assert.equal(el('boundaryChoices').hidden,true);
+  run('state.Mon_10=2;updateTally()');assert.equal(el('boundaryChoices').hidden,false);
+  setBlocks(0,1);assert.equal(el('boundaryChoices').hidden,true);
+  run('state.Mon_18=1;updateTally()');assert.equal(el('boundaryChoices').hidden,false);
+  assert.equal(el('allowExtraClosings').checked,false);
+  ctx.boundaryContext.caps.closings=1;ctx.boundaryContext.token='raised';
+  await run('refreshContext()');assert.equal(el('boundaryChoices').hidden,true);
+  assert.equal(el('reconfirmConsent').hidden,false);assert.equal(el('allowExtraOpenings').checked,true);
+  el('clearBoundaryConsent').click();assert.equal(el('allowExtraOpenings').checked,false);
+  assert.equal(el('allowExtraClosings').checked,false);assert.equal(el('submitBtn').disabled,false);
+  await run('submitAvailability()');assert.equal(captured.allowExtraOpenings,false);assert.equal(captured.allowExtraClosings,false);
+  assert.equal(captured.consentContext,'raised');dom.window.close();
+});
+
 test('supervisor consent follows selected employee and rejects out of order refreshes',async()=>{
   const {dom,run,doc}=await admin();
   const c={allowExtraOpenings:true,allowExtraClosings:false,effectiveOpenings:true,enabled:true,caps:{openings:2,closings:1,combined:2},candidates:{openings:['Mon'],closings:[]}};
