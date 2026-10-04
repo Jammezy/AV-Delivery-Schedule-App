@@ -96,8 +96,9 @@ print('PASS PostgreSQL: concurrent startup/migration, legacy preferences/setting
 import unittest
 from models import init_db
 from test_folder_deletion import FolderDeletionTests
+from test_retention import RetentionTests
 
-class PostgresDeletionTests(FolderDeletionTests, unittest.TestCase):
+class PostgresDeletionTests(RetentionTests, FolderDeletionTests, unittest.TestCase):
     def test_boundary_consent_migration_atomicity_and_persistence(self):
         ctx = self.context()
         payload = dict(name='Consent test', folderId=ctx['folder']['id'], revision=ctx['revision'],

@@ -436,6 +436,23 @@ def recheck_generation_folder(original):
     return current
 
 
+def generation_input_version(rows):
+    """Opaque fingerprint; removed/edited source rows invalidate in-flight work."""
+    # Consent-only changes keep the pre-solve frozen agreement, as before.
+    # Resubmission resets submitted_at; cleanup removes the row entirely.
+    versions = sorted((r.id, r.employee_id, r.folder_id, r.submitted_at.isoformat(),
+                       r.data_json, r.comment) for r in rows)
+    return hashlib.sha256(json.dumps(versions).encode()).hexdigest()
+
+
+def recheck_generation_inputs(folder, version, employee_ids=None):
+    rows = FolderAvailability.select().where(FolderAvailability.folder == folder.id)
+    if employee_ids is not None:
+        rows = rows.where(FolderAvailability.employee.in_(employee_ids))
+    if generation_input_version(list(rows)) != version:
+        abort(409, "Availability changed or expired. Refresh and generate a fresh preview.")
+
+
 @app.post("/api/availability")
 def submit_availability():
     data = body()
@@ -606,10 +623,12 @@ def generate_weekend():
         roster = [serialize(r.employee) for r in rows]
         availability = {r.employee.name: r.get_data() for r in rows}
 
+        input_version = generation_input_version(rows)
     result = weekend_generator.generate_weekend_schedule(config, availability, roster)
 
     with write_transaction():
         recheck_generation_folder(folder)
+        recheck_generation_inputs(folder, input_version)
 
     # Send it back
     return jsonify({
@@ -620,7 +639,8 @@ def generate_weekend():
         "employees": roster,
         "config": config,
         "folderId": folder.id,
-        "folderVersion": folder.created_at.isoformat()
+        "folderVersion": folder.created_at.isoformat(),
+        "inputVersion": input_version
     })
 
 
@@ -636,6 +656,7 @@ def save_weekend():
         folder = folder_or_404(folder_id)
         if snapshot.get("folderId") != folder.id or snapshot.get("folderVersion") != folder.created_at.isoformat():
             abort(409, "The weekend preview does not belong to this folder. Generate a fresh preview before saving.")
+        recheck_generation_inputs(folder, snapshot.get("inputVersion"))
         saved = SavedWeekendSchedule.create(folder=folder, snapshot_json=json.dumps(snapshot))
     return jsonify({"savedScheduleId": saved.id})
 
@@ -680,12 +701,14 @@ def generate():
         cfg = get_config()
         freeze_consent(cfg, rows, folder.id)
         submissions = [submission_json(r, cfg) for r in rows]
+        input_version = generation_input_version(rows)
     seed = data.get("seed")
     if seed is not None and (type(seed) is not int or not 0 <= seed < 2**31):
         abort(400, "Invalid generation seed.")
     result = solver_module.generate_schedule(roster, availability, cfg, seed=seed)
     with write_transaction():
         recheck_generation_folder(folder)
+        recheck_generation_inputs(folder, input_version, ids)
         if result["status"] not in ("OPTIMAL", "FEASIBLE"):
             return jsonify(result)
         result.update(employees=roster, config=cfg)

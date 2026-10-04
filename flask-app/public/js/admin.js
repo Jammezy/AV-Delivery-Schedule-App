@@ -70,7 +70,12 @@ async function apiGet(url) {
     const data = await res.json();
     if (!TOKEN || TOKEN !== token || revision !== VIEW_REVISION) return null;
     if (res.status === 401) { clearSession(); return null; }
-    if (!res.ok) { $("folderMsg").textContent = data.error || "Could not load data."; return null; }
+    if (!res.ok) {
+      if (res.status === 404 && (/^\/api\/folders\//.test(url) || /^\/api\/availability\?/.test(url))) {
+        await recoverRemovedContent();
+      }
+      $("folderMsg").textContent = data.error || "Could not load data."; return null;
+    }
     return data;
   } catch (_) { if (TOKEN === token && revision === VIEW_REVISION) $("folderMsg").textContent = "Connection failed. Please retry."; return null; }
 }
@@ -81,6 +86,10 @@ async function apiSend(url, method, body) {
     const data = await res.json().catch(() => ({}));
     if (!TOKEN || TOKEN !== token || revision !== VIEW_REVISION) return null;
     if (res.status === 401) { clearSession(); return null; }
+    if ((res.status === 404 && /^\/api\/folders\//.test(url)) ||
+        (res.status === 409 && ["/api/generate", "/api/generate_weekend", "/api/save_weekend"].includes(url))) {
+      await recoverRemovedContent();
+    }
     return {ok:res.ok, status:res.status, data};
   } catch (_) { return {ok:false, data:{error:"Connection failed. Please retry."}}; }
 }
@@ -400,6 +409,13 @@ function renderDiagnostics(payload) {
   badge.className = "badge" + (blockers ? "" : " warn");
   badge.textContent = blockers ? blockers : (d.warnings.length || "");
   badge.style.display = (blockers || d.warnings.length) ? "" : "none";
+
+  if (!d.coverage.length) {
+    $("diagArea").innerHTML = d.blockers.map(b =>
+      `<div class="finding block"><span>${escapeHtml(b.message)}</span></div>`).join("") ||
+      "No submitted availability. Refresh after employees submit.";
+    return;
+  }
 
   const stats = `
     <div class="stat-strip">

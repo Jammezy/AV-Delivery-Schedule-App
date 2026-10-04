@@ -388,3 +388,150 @@ For manual review, use a disposable local database (never production Neon):
 6. Submit a previously opened employee form and confirm rejection. Delete the
    final folder and check the empty state, creation controls, Employees, and
    Weekly hours remaining. Repeat at a 375px viewport and inspect the dialog.
+## Automatic 18-month retention
+
+`cleanup_retention.py` performs one bounded cleanup pass independently of Flask.
+It does **not** run during app startup, import solver modules, initialize storage,
+create tables, or migrate the database. This change alone does not enable a cron
+job or delete production data.
+
+The retention unit is a database record, not an uploaded file. Employee and
+supervisor availability saves reset `submitted_at`; retention uses that **latest
+submission**, not first insertion. Consent-only edits do not extend retention.
+Legacy `Availability` records use their latest submission too. Weekday and weekend
+snapshots use their own `created_at`. Archived and active content use the same
+policy. Folders use their own creation date and are removed only after **all**
+their availability, weekday snapshots and weekend snapshots have been removed.
+An old folder with any newer child retains its identity, name and active status.
+Empty newer folders stay. Employees (including lead flags and hour targets),
+global settings, authentication sessions and the submission-state singleton stay.
+
+One UTC time is captured per pass. Subtract 18 **calendar months**, retaining the
+time of day and microseconds, clamping to the last valid day of the destination
+month. For example, August 31, 2026 becomes February 28, 2025; August 31, 2025
+becomes February 29, 2024. Only timestamps **strictly before** the cutoff expire;
+equality stays. A run at October 3, 2026 12:00 UTC uses April 3, 2025 12:00 UTC.
+Existing naive timestamps mean UTC, regardless of the host's timezone. SQLite
+normalizes offset-bearing legacy timestamps explicitly, without rounding away
+microseconds. PostgreSQL must retain the existing `timestamp without time zone`
+schema; the command rejects changed age-column types. Invalid/nonfinite timestamps
+are excluded, reported and protect their folders pending investigation.
+
+Deleting the active folder clears its active reference and advances the form
+revision in the same transaction, without activating a replacement. Fresh
+submissions remain allowed to surviving active folders. The singleton stays so a
+restart cannot reimport removed legacy records. Generation rechecks input row
+identities, submission dates and availability/comments after solving. Removed or
+resubmitted inputs reject the result with 409. Weekend previews carry an opaque
+input fingerprint and must still match on save. Consent-only changes preserve the
+existing pre-solve frozen agreement/settings behavior; solver rules are unchanged.
+
+Younger snapshots are independent records and may contain copies of older source
+information. This policy does not promise redaction of every historical copy.
+Deletion does not erase exports on users' devices, information already in browser
+memory, backups or Neon restore history. Open admin views refresh their lists and
+clear cached previews/exports when a read finds removed content, or generation
+rejects changed inputs. An overview refresh discards missing selections/pins.
+There is no push notification: content already displayed remains until a refresh
+or subsequent request detects the change. A stale browser may resubmit availability
+to a surviving active folder, resetting its latest-submission age.
+
+## Command and deployment controls
+
+Production requires a nonempty PostgreSQL `DATABASE_URL`, plus
+`RETENTION_DATABASE_HOST` (the exact hostname from that URL) and
+`RETENTION_DATABASE_NAME` (its database name, normally `neondb`). Copy these from
+the verified web-service connection privately; do not print the secret URL. The
+job fails if the identity differs, storage/schema is missing, a lock times out, or
+the transaction fails. It never falls back to SQLite in production mode.
+
+```sh
+# Read-only preview; RETENTION_ENABLED is not needed.
+python cleanup_retention.py
+# Explicit destructive pass, only after rollout review and enabling the setting.
+RETENTION_ENABLED=true python cleanup_retention.py --apply --max-rows 1000
+# Disposable SQLite only; never use the web service's local database.
+DATABASE_PATH=/tmp/disposable-retention.db python cleanup_retention.py --local-test
+```
+
+SQLite test storage must already have been initialized by the app/test harness.
+`--apply` also requires `RETENTION_ENABLED=true` in local-test mode. Do not pass
+connection strings on the command line. The connection closes on success/failure;
+SIGTERM or interruption rolls back an open transaction.
+
+Each apply pass uses the existing SQLite `BEGIN IMMEDIATE` / PostgreSQL advisory
+transaction lock `9032401`, coordinating with app writes and manual deletion.
+Eligibility is selected under that lock; a preview is never reused as a deletion
+list. A pass is one atomic transaction, capped at 1,000 total record deletions by
+default (`--max-rows` accepts 1–10,000). Availability and snapshots/legacy rows
+are removed before eligible empty folders. The lock wait defaults to 5 seconds
+(`--lock-timeout-ms` accepts 1–60,000); PostgreSQL statements also have a 60-second
+timeout. No automatic retry occurs: a failed transaction rolls back completely,
+exits nonzero, and can be safely rerun. Successful bounded passes resume on later
+runs. Logs report UTC run time/cutoff, candidates, committed counts, invalid dates
+and remaining backlog, without comments, employee names, snapshots or tokens.
+Do not treat `backlogRemaining=true` as a fully cleared backlog. Review invalid
+timestamp counts even when there is no eligible backlog. Manual folder deletion's
+exact-name and preview-version checks remain required; cleanup invalidates a
+preview when it changes its contents.
+
+No timestamp migration/index is added: the inspected database has only one folder
+and four submissions. Existing folder foreign-key indexes support child existence
+checks. Evaluate `(submitted_at, id)` / `(created_at, id)` indexes using query plans
+before growing the workload or increasing the batch limit; apply any index change
+through the app's serialized migration process, never through this job.
+
+## Render cron setup and rollout after manual merge
+
+1. Confirm the web service's secret connection maps to the intended Neon project,
+   branch and database. Recheck recovery coverage and historical timestamps. Make
+   a consistent PostgreSQL backup with a matching-version `pg_dump` client and
+   restore it into an isolated target; verify counts and app reads there before
+   enabling permanent deletion. The SQLite backup helper is not a Neon backup.
+2. Merge this PR manually, deploy the web changes, and verify its exact commit.
+3. Create a Render Cron Job using the same repository, branch `master`, root
+   `flask-app`, Python runtime, build `pip install -r requirements.txt`. Set its
+   command initially to `python cleanup_retention.py --max-rows 1000` (preview).
+   Use the same privately verified Neon `DATABASE_URL`, and the identity variables
+   above. Set `RETENTION_ENABLED=false`. Do not wire a Render database in place of
+   Neon. No cron is created by this PR.
+4. Trigger a preview manually and review eligible counts/invalid timestamps. After
+   validating recovery and preservation, set `RETENTION_ENABLED=true` and change
+   the command to `python cleanup_retention.py --apply --max-rows 1000`. Trigger one
+   bounded pass and inspect its committed/remaining counts before scheduling.
+5. Schedule daily at `0 8 * * *` (08:00 UTC: 2 AM Denver daylight time, 1 AM Denver
+   standard time). Expiration is handled on the next successful daily pass, so
+   normal latency is up to a day; failures/backlogs can extend it. Render cron
+   currently has a $1 monthly minimum; confirm pricing before provisioning.
+   [Official cron documentation](https://render.com/docs/cronjobs).
+
+Monitor Render Runs for successful completion, duration, cutoff, deleted counts,
+invalid timestamps and backlog. Configure Render failure notifications; repeat
+failed runs only after investigating the cause. Suspend the cron or set
+`RETENTION_ENABLED=false` to stop apply runs (apply then fails visibly). Change the
+command back to preview for read-only monitoring. Check the last successful Run
+and its JSON counts; reverting code stops future cleanup but does not restore
+already deleted records.
+
+Read-only environment inspection on October 3, 2026 (Denver; October 4 UTC) found
+the web service live at `544d5bf1983e08025fb0f5d0b626601e80909592`, using root
+`flask-app`, one free Virginia Python instance and the documented build/start
+commands. The confirmed Render workspace lists no cron. Supplied Neon production
+branch `br-sparkling-tooth-b4e1vefe` in `little-breeze-25412594`, database `neondb`,
+contains one folder and four submissions, with **zero expired records**. It has
+the nine expected tables, non-null naive age columns and no triggers. No payloads
+were read. The aggregate preview used the same strict UTC 18-month cutoff; it was
+not execution of the new command against production. The Render secret's exact
+endpoint mapping and historical timezone correctness were not independently
+verified. Neon reports six hours of restore history and no automatic snapshot
+schedule; this is not a validated restore test. Those rollout prerequisites remain
+for the owner before activation. No production configuration/data was changed.
+
+Tests: `python -m unittest -v test_app test_boundary` covers retention on disposable
+SQLite along with existing app/deletion/solver-boundary regressions.
+`TEST_POSTGRES_PORT=... python test_postgres.py` runs the same retention/deletion
+regressions inside a uniquely created local PostgreSQL database. Never point the
+test harness at Neon. `node test_frontend.cjs`, `node test_deletion_browser.cjs`
+and `node test_retention_browser.cjs` cover frontend state, existing manual
+deletion and background removal recovery (including 375px). The PR workflow also
+runs existing boundary/supervisor/permission browser and solver suites.
