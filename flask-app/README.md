@@ -481,7 +481,48 @@ checks. Evaluate `(submitted_at, id)` / `(created_at, id)` indexes using query p
 before growing the workload or increasing the batch limit; apply any index change
 through the app's serialized migration process, never through this job.
 
-## Render cron setup and rollout after manual merge
+## Free daily cleanup with GitHub Actions
+
+Use `.github/workflows/retention-cleanup.yml` instead of a paid Render Cron Job.
+Standard GitHub-hosted runners are free for this public repository. No paid Render
+service or additional server is needed. Keep the repository public and use the
+standard `ubuntu-latest` runner to retain this pricing model. See
+[GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+
+The workflow has no production credentials in source control and starts disabled.
+Only `master` can run it with production secrets; PRs never trigger it. Set up
+these repository Actions settings after reviewing and manually merging the change:
+
+- Secret `RETENTION_DATABASE_URL`: the verified **direct**, non-pooled Neon
+  connection to the original production branch and database. Do not use the web
+  app's pooled connection: cleanup uses session settings and a transaction lock.
+- Variable `RETENTION_DATABASE_HOST`: the exact direct endpoint hostname.
+- Variable `RETENTION_DATABASE_NAME`: `neondb`.
+- Variable `RETENTION_ENABLED`: initially `false`.
+
+Verify a recoverable backup or isolated snapshot restoration before enabling
+deletion. Under Actions → Daily scheduling retention → Run workflow, select
+`master` and `preview`. Review the JSON cutoff, candidates, invalid timestamps and
+backlog. A missing or wrong database identity fails visibly instead of falling
+back to SQLite. After the preview and recovery checks succeed, set the enable
+variable to `true`, manually run `apply`, and verify committed/remaining counts.
+Do not enable both the GitHub workflow and a Render cron.
+
+Enabled scheduled runs apply at **08:17 UTC daily** (2:17 AM Denver daylight time,
+1:17 AM standard time). The minute avoids GitHub's busiest top-of-hour period.
+GitHub can delay or drop scheduled runs, and disables schedules in public
+repositories after 60 days without repository activity. Check Actions regularly,
+enable GitHub workflow-failure notifications, and re-enable an inactive workflow
+when needed. Expiration normally occurs on the next successful daily pass;
+backlogs, missed runs or inactivity can extend that delay. See
+[scheduled workflow behavior](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
+
+Each run deletes at most 1,000 records, uses the existing app write lock, and
+rolls back on failure. Set `RETENTION_ENABLED=false` to stop automatic apply runs;
+manual previews remain available. Disabling the schedule does not restore deleted
+data. Never paste the database secret into a workflow file, log, issue or PR.
+
+## Optional paid Render cron setup and rollout after manual merge
 
 1. Confirm the web service's secret connection maps to the intended Neon project,
    branch and database. Recheck recovery coverage and historical timestamps. Make
