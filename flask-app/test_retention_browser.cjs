@@ -9,7 +9,7 @@ const python = process.env.PYTHON || 'python';
 
 async function check(viewport) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'retention-browser-'));
-  const env = {...process.env, DATABASE_URL:'', DATABASE_PATH:path.join(directory,'test.db'), ADMIN_PASSWORD:'browser-test', PORT:'5098'};
+  const env = {...process.env, REQUEST_RETENTION_ENABLED:'false', DATABASE_URL:'', DATABASE_PATH:path.join(directory,'test.db'), ADMIN_PASSWORD:'browser-test', PORT:'5098'};
   function execute(code) {
     const result = spawnSync(python, ['-c', code], {cwd:__dirname, env, encoding:'utf8'});
     assert.equal(result.status, 0, result.stderr || String(result.error));

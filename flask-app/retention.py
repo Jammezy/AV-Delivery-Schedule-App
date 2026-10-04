@@ -1,6 +1,7 @@
 """One bounded retention pass. No startup migrations, Flask or payload logging."""
 import calendar
 import datetime as dt
+from contextlib import contextmanager
 
 from peewee import PostgresqlDatabase, SqliteDatabase, fn
 from models import (db, write_transaction, Folder, FolderAvailability, Availability,
@@ -80,33 +81,50 @@ def _counts(cutoff, after_cleanup=False):
     return counts
 
 
-def run_retention(*, now=None, apply=False, max_rows=1000, timeout_ms=5000):
+@contextmanager
+def _transaction(apply, timeout_ms, statement_timeout_ms):
+    if isinstance(db, PostgresqlDatabase):
+        with db.atomic():
+            # Transaction-local settings also work with Neon's pooled endpoint.
+            if not apply:
+                db.execute_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            db.execute_sql("SET LOCAL TIME ZONE 'UTC'")
+            db.execute_sql("SET LOCAL lock_timeout = %s", (str(timeout_ms) + "ms",))
+            db.execute_sql("SET LOCAL statement_timeout = %s", (str(statement_timeout_ms) + "ms",))
+            if apply:
+                db.execute_sql("SELECT pg_advisory_xact_lock(9032401)")
+            yield
+    else:
+        previous = db.execute_sql("PRAGMA busy_timeout").fetchone()[0]
+        db.execute_sql("PRAGMA busy_timeout = %d" % timeout_ms)
+        try:
+            with write_transaction() if apply else db.atomic():
+                yield
+        finally:
+            db.execute_sql("PRAGMA busy_timeout = %d" % previous)
+
+
+def run_retention(*, now=None, apply=False, max_rows=1000, timeout_ms=5000,
+                  statement_timeout_ms=60000):
     """One atomic pass, at most max_rows committed removals, all-or-nothing.
 
-    Call with an exclusively owned connection; callers close it in finally.
+    Call with a thread-owned connection; callers close it in finally.
     Candidate selection is always inside the shared write lock when applying.
     """
     if type(max_rows) is not int or not 1 <= max_rows <= 10000:
         raise ValueError("max_rows must be between 1 and 10000")
     if type(timeout_ms) is not int or not 1 <= timeout_ms <= 60000:
         raise ValueError("timeout_ms must be between 1 and 60000")
+    if type(statement_timeout_ms) is not int or not 1 <= statement_timeout_ms <= 60000:
+        raise ValueError("statement_timeout_ms must be between 1 and 60000")
     now = utc_naive(now if now is not None else dt.datetime.now(dt.timezone.utc))
     cutoff = cutoff_for(now)
     if isinstance(db, SqliteDatabase):
         db.register_function(_sqlite_timestamp, "retention_utc", 1)
     db.connect(reuse_if_open=True)
-    if isinstance(db, PostgresqlDatabase):
-        db.execute_sql("SET TIME ZONE 'UTC'")
-        db.execute_sql("SET lock_timeout = %s", (str(timeout_ms) + "ms",))
-        db.execute_sql("SET statement_timeout = '60s'")
-    elif isinstance(db, SqliteDatabase):
-        db.execute_sql("PRAGMA busy_timeout = %d" % timeout_ms)
-    else:
+    if not isinstance(db, (PostgresqlDatabase, SqliteDatabase)):
         raise RuntimeError("Unsupported database")
-    transaction = write_transaction() if apply else db.atomic()
-    with transaction:
-        if not apply and isinstance(db, PostgresqlDatabase):
-            db.execute_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+    with _transaction(apply, timeout_ms, statement_timeout_ms):
         validate_schema()
         candidates = _counts(cutoff, after_cleanup=True)
         invalid = {key: model.select().where(~_valid(field) | field.is_null(True)).count()

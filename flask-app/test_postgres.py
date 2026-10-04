@@ -120,6 +120,7 @@ class PostgresDeletionTests(RetentionTests, FolderDeletionTests, unittest.TestCa
         self.assertIsNone(migrated['consent']['consentContext'])
 
     def setUp(self):
+        web.app.config['REQUEST_RETENTION_ENABLED'] = False
         with db.connection_context():
             db.execute_sql('TRUNCATE TABLE adminsession, savedweekendschedule, savedschedule, '
                 'folderavailability, submissionstate, folder, availability, employee, config RESTART IDENTITY')
