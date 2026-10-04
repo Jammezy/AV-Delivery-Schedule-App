@@ -14,7 +14,7 @@
 
 <main>
   <div class="card">
-    <p class="hint">Submit your availability for weekdays and weekends. Your supervisor will review your responses when planning schedules.</p></div>
+    <p class="hint">Submit your availability for weekdays and weekends. Your responses are saved automatically to your code’s scheduling folder.</p></div>
   <div class="card" id="codeGate">
     <h2>Enter your collection code</h2>
     <label for="collectionCode">Code from your supervisor</label>
@@ -29,7 +29,7 @@
     <label for="nameInput">First and last name</label>
     <input type="text" id="nameInput" placeholder="First and last name" maxlength="100"
            autocomplete="name" autocapitalize="words">
-    <p class="hint">Your supervisor reviews each response. Submitting again creates a new sheet; it does not replace your earlier answers.</p>
+    <p class="hint">Every submission is saved separately. Existing availability is never overwritten. Repeated names receive a numbered employee entry.</p>
     <p id="collectionDestination" role="status"></p>
     <p id="codeResponseAllowance" class="hint" role="status"></p>
   </div>
@@ -89,7 +89,7 @@
     <p id="commentCount" role="status">0 / 99 characters</p></div>
   <div id="msgArea" role="status"></div>
   <button id="submitBtn">Submit availability</button>
-  <button id="newSheetBtn" class="secondary" hidden>Submit another sheet</button>
+  <button id="newSheetBtn" class="secondary" hidden>Enter a code for another submission</button>
   </div>
 </main>
 

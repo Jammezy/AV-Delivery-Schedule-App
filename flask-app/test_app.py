@@ -281,7 +281,7 @@ class AppTests(RetentionTests, FolderDeletionTests, unittest.TestCase):
         self.assertEqual(self.submit(availability={"Sun_10": True}, comment="Summer").status_code, 200)
         a = self.overview(spring["folder"]["id"])["submissions"][0]
         b = self.overview(summer["id"])["submissions"][0]
-        self.assertEqual(a["employeeId"], b["employeeId"])
+        self.assertNotEqual(a["employeeId"], b["employeeId"])
         self.assertEqual(a["comment"], "Spring")
         self.assertEqual(b["availability"], {"Sun_10": True})
         self.client.patch(f'/api/folders/{spring["folder"]["id"]}', headers=self.headers, json={"activate": True})
@@ -313,7 +313,7 @@ class AppTests(RetentionTests, FolderDeletionTests, unittest.TestCase):
         self.assertEqual(self.submit(availability={}).status_code, 200)
         data = self.overview(ctx["folder"]["id"])
         self.assertEqual(data["missing"], [])
-        self.assertEqual(data["submissions"][0]["availability"], {})
+        self.assertEqual(data["submissions"][1]["availability"], {})
         self.assertEqual(self.submit(availability={"NotADay_99": True}).status_code, 400)
 
     def test_database_failure_is_not_reported_as_success(self):
@@ -345,7 +345,7 @@ class AppTests(RetentionTests, FolderDeletionTests, unittest.TestCase):
         self.assertEqual(snapshot["result"]["config"]["maxShiftLength"], 6)
         self.assertEqual(self.client.delete(url, headers=self.headers, json={}).status_code, 400)
         self.assertEqual(self.client.delete(url, headers=self.headers, json={"confirm":True}).status_code, 200)
-        self.assertEqual(len(self.overview(folder_id)["submissions"]), 2)
+        self.assertEqual(len(self.overview(folder_id)["submissions"]), 3)
         self.assertEqual(self.client.post("/api/generate", headers=self.headers, json={"folderId":folder_id,"employeeIds":[]}).status_code, 400)
 
     def test_real_solver_weekends_do_not_change_weekday_result(self):

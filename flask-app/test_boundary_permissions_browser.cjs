@@ -94,12 +94,12 @@ async function check(viewport) {
     await employee.locator('#allowExtraClosings').uncheck();await employee.locator('#submitBtn').click();
     await employee.waitForFunction(()=>document.querySelector('#msgArea').textContent.includes('Saved'));
     await fixtureAPI.accept('Alex');
-    await page.locator('#saveBoundaryPermissions').click();
-    await page.locator('#reloadBoundaryPermissions').waitFor({state:'visible'});
-    assert.equal(await page.locator('#supervisorExtraOpenings').isChecked(),false);
-    await page.locator('#reloadBoundaryPermissions').click();
-    await page.waitForFunction(()=>document.querySelector('#supervisorExtraOpenings')?.checked===true);
-    assert.equal(await page.locator('#supervisorExtraClosings').isChecked(),false);
+    // The employee submission is independent and cannot invalidate the original employee's draft.
+    await save();
+    assert.equal((await current()).consent.allowExtraOpenings,false);
+    assert.equal((await current()).consent.allowExtraClosings,true);
+    const after=await overview(1);
+    assert.ok(after.submissions.length>initial.submissions.length);
     await page.request.put('http://127.0.0.1:5096/api/config',{headers,data:{maxMorningShifts:1}});
     await page.evaluate(()=>renderOverview());
     assert.match(await page.locator('#viewerPermissionControls').innerText(),/Reconfirmation required/);

@@ -88,8 +88,7 @@ def code_status(code):
         return 'Exhausted'
     if code.expires_at and code.expires_at <= now():
         return 'Expired'
-    state = SubmissionState.get_by_id(1)
-    if state.active_folder_id != code.folder_id or code.folder.archived:
+    if code.folder.archived:
         return 'Collection closed'
     settings, _ = CollectionSettings.get_or_create(folder=code.folder_id)
     if settings.received >= settings.response_cap:
@@ -114,9 +113,6 @@ def session_record(require_csrf=False):
         abort(403, 'Refresh the form and enter your collection code again.')
     if session.edit_grant_id and (session.edit_grant.revoked or session.edit_grant.expires_at <= now()):
         abort(401, 'This edit link expired or was revoked. Ask your supervisor for another link.')
-    state = SubmissionState.get_by_id(1)
-    if session.state_revision != state.revision or session.code.folder_id != state.active_folder_id:
-        abort(409, 'The collection changed. Enter your code again to confirm the destination.')
     check_code(session.code, allow_exhausted=True)
     return session, token
 
@@ -159,8 +155,10 @@ def public_context(session=None, token=None):
                   boundaryContext=boundary_context(cfg), unlocked=bool(session))
     if session:
         result['folder'] = dict(id=session.code.folder_id, name=session.code.folder.name)
+        result['revision'] = session.state_revision
         result['responseLimit'] = session.code.response_limit
         result['csrf'] = csrf(token)
+        result['submitted'] = bool(session.submitted_request_key)
         if session.edit_grant_id:
             row = session.edit_grant.submission
             recorded = dict(allowExtraOpenings=row.allow_extra_openings, allowExtraClosings=row.allow_extra_closings,
@@ -173,10 +171,40 @@ def public_context(session=None, token=None):
 def receipt(row):
     av = json.loads(row.data_json)
     return dict(ok=True, availableHours=sum(normalize_level(v) > 0 for v in av.values()),
-                preferredHours=sum(normalize_level(v) == 2 for v in av.values()), pendingReview=True)
+                preferredHours=sum(normalize_level(v) == 2 for v in av.values()), pendingReview=False)
+
+
+def save_to_folder(row, permission_version):
+    """Every submission has its own roster entry; shared codes never establish identity."""
+    base = row.name
+    name = base
+    number = 2
+    existing = {employee.name.casefold() for employee in Employee.select(Employee.name)}
+    while name.casefold() in existing:
+        name = f'{base} ({number})'
+        number += 1
+    employee = Employee.create(name=name)
+    current = FolderAvailability.create(employee=employee, folder=row.folder,
+        data_json=row.data_json, comment=row.comment,
+        allow_extra_openings=row.allow_extra_openings, allow_extra_closings=row.allow_extra_closings,
+        consent_context=row.consent_context, submitted_at=row.submitted_at)
+    row.employee = employee
+    row.status = 'Accepted'
+    row.accepted_fingerprint = permission_version(current)
+    row.save(only=[IntakeSubmission.employee, IntakeSubmission.status, IntakeSubmission.accepted_fingerprint])
+
+
+def import_pending_responses(permission_version):
+    """Idempotently import pending sheets separately without changing existing availability."""
+    with db.connection_context(), write_transaction():
+        for row in IntakeSubmission.select().where(IntakeSubmission.status == 'Pending').order_by(
+                IntakeSubmission.submitted_at, IntakeSubmission.id):
+            save_to_folder(row, permission_version)
 
 
 def register(app, require_admin, permission_version, body, folder_or_404):
+    import_pending_responses(permission_version)
+
     @app.post('/api/collection/unlock')
     def unlock():
         rate_limit('unlock', request.remote_addr or '?', 150)
@@ -230,8 +258,7 @@ def register(app, require_admin, permission_version, body, folder_or_404):
             code = session.code
             cfg = get_config()
             name, comment, av, explicit = validate_payload(data, cfg)
-            state = SubmissionState.get_by_id(1)
-            if type(data.get('folderId')) is not int or type(data.get('revision')) is not int or data['folderId'] != code.folder_id or data['revision'] != state.revision:
+            if type(data.get('folderId')) is not int or type(data.get('revision')) is not int or data['folderId'] != code.folder_id or data['revision'] != session.state_revision:
                 abort(409, 'The collection changed. Refresh and confirm the destination.')
             if session.edit_grant_id:
                 original = session.edit_grant.submission
@@ -245,6 +272,8 @@ def register(app, require_admin, permission_version, body, folder_or_404):
                     abort(409, 'This request ID was already used. Start a new submission.')
                 return jsonify(receipt(previous))
             check_code(code)
+            if session.submitted_request_key:
+                abort(409, 'This form has already been submitted. Enter a code again for another submission.')
             settings, _ = CollectionSettings.get_or_create(folder=code.folder)
             if settings.received >= settings.response_cap:
                 abort(409, 'This folder has reached its total submission limit. Ask your supervisor to increase the folder limit.')
@@ -253,10 +282,13 @@ def register(app, require_admin, permission_version, body, folder_or_404):
                 consent_context=boundary_context(cfg)['token'] if explicit else None,
                 parent_id=session.edit_grant.submission_id if session.edit_grant_id else None,
                 request_key=key, payload_hash=payload_hash)
+            save_to_folder(row, permission_version)
             code.received += 1
             code.save(only=[CollectionCode.received])
             settings.received += 1
             settings.save(only=[CollectionSettings.received])
+            session.submitted_request_key = key
+            session.save(only=[SubmissionSession.submitted_request_key])
             return jsonify(receipt(row))
 
     def code_json(code):

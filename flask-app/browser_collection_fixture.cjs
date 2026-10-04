@@ -1,4 +1,4 @@
-// Synthetic fixture helpers. Every write follows the real code + review APIs.
+// Synthetic fixture helpers. Every write follows the real code-authorized submission APIs.
 const assert=require('node:assert/strict');
 const {randomUUID}=require('node:crypto');
 const {spawnSync}=require('node:child_process');
@@ -7,7 +7,7 @@ async function collectionFixture(page,base){
  const login=await page.request.post(base+'/api/admin/login',{data:{password:'browser-test'}});
  const headers={Authorization:'Bearer '+(await login.json()).token};
  const intake=async()=>(await (await page.request.get(base+'/api/admin/intake?folderId=1',{headers})).json());
- async function accept(name){const data=await intake(),row=data.submissions.find(r=>r.name===name&&r.status==='Pending');assert.ok(row,'Pending '+name);const employee=data.employees.find(e=>e.name===name);const response=await page.request.post(base+`/api/admin/intake/${row.id}/review`,{headers,data:{action:'accept',employeeId:employee.id,reviewVersion:row.reviewVersion,acceptedVersion:data.acceptedVersions[String(employee.id)]??null}});assert.equal(response.status(),200,await response.text());}
+ async function accept(name){const data=await intake();assert.ok(data.submissions.some(r=>r.name===name&&r.status==='Accepted'),'Automatically saved '+name);}
  async function open(employee,name){
   let data=await intake(),row=data.submissions.find(r=>r.name===name&&r.status==='Accepted');
   if(!row){

@@ -260,6 +260,8 @@ function updateCollectionDetails() {
 
 function useContext(next) {
   CONTEXT = next; CONFIG = next.config; CSRF = next.csrf || null;
+  SAVED = !!next.submitted; $("newSheetBtn").hidden = !SAVED;
+  $("nameInput").readOnly = !!next.edit;
   $("availabilityForm").hidden = !next.unlocked;
   $("codeGate").hidden = !!next.unlocked;
   updateCollectionDetails();
@@ -277,7 +279,9 @@ async function unlock(editToken = null) {
       body:JSON.stringify(editToken ? {editToken} : {code:$("collectionCode").value})});
     const data = await res.json();
     if (!res.ok) { $("codeGateMsg").textContent = data.error || "Could not open the form."; return; }
-    $("collectionCode").value = ""; SAVED = false; useContext(data); $("nameInput").focus();
+    $("collectionCode").value = "";
+    if (SAVED) { state = {}; $("nameInput").value = ""; $("commentInput").value = ""; resetConsent(); updateCommentCount(); REQUEST_ID = LAST_PAYLOAD = null; }
+    $("codeGateMsg").textContent = ""; useContext(data); $("nameInput").focus();
   } catch (_) { $("codeGateMsg").textContent = "Connection failed. Please retry."; }
   finally { $("unlockBtn").disabled = false; }
 }
@@ -315,8 +319,8 @@ async function submitAvailability() {
       return showMsg(data.error || "That didn't save. Try again.", "err");
     }
 
-    SAVED = true; $("newSheetBtn").hidden = !!CONTEXT.edit;
-    showMsg(`Saved — ${data.availableHours} available, ${data.preferredHours} preferred. Your supervisor will review this response.`, "ok");
+    SAVED = true; $("newSheetBtn").hidden = false;
+    showMsg(`Saved to ${CONTEXT.folder.name} — ${data.availableHours} available, ${data.preferredHours} preferred. Your availability is ready for scheduling.`, "ok");
   } catch (_) { showMsg("Could not save. Your entries are still here; please retry.", "err");
   } finally {
     SUBMITTING = false;
@@ -362,9 +366,10 @@ async function refreshContext() {
   $("unlockBtn").onclick = () => unlock();
   $("collectionCode").onkeydown = event => { if (event.key === "Enter") unlock(); };
   $("newSheetBtn").onclick = () => {
-    SAVED = false; REQUEST_ID = LAST_PAYLOAD = null; $("newSheetBtn").hidden = true;
-    state = {}; $("nameInput").value = ""; $("commentInput").value = ""; resetConsent(); updateCommentCount(); renderGrid();
-    $("nameInput").focus();
+    CSRF = null; $("newSheetBtn").hidden = true;
+    $("codeGate").hidden = false;
+    $("codeGateMsg").textContent = "Enter your supervisor’s code again for another submission. The code determines its scheduling folder.";
+    $("submitBtn").disabled = true; $("collectionCode").value = ""; $("collectionCode").focus();
   };
   window.addEventListener("hashchange", async () => {
     const token = new URLSearchParams(location.hash.slice(1)).get("edit");

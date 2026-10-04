@@ -29,11 +29,8 @@
       <div class="row"><label for="folderSelect">Viewing folder</label><select id="folderSelect"></select></div>
       <p id="folderStatus" role="status"></p>
       <div class="row"><input id="newFolderName" aria-label="New folder name" placeholder="Fall 2026" maxlength="100">
-        <label><input id="activateNewFolder" type="checkbox"> Accept submissions here</label>
         <button id="createFolderBtn">Create folder</button></div>
       <div class="row"><button id="renameFolderBtn" class="secondary">Rename</button>
-        <button id="activateFolderBtn" class="secondary">Accept submissions here</button>
-        <button id="stopFolderBtn" class="secondary">Stop accepting submissions</button>
         <button id="archiveFolderBtn" class="secondary">Archive / restore</button>
         <button id="deleteFolderBtn" class="danger">Delete folder permanently</button></div>
       <p id="folderMsg" role="status"></p>
@@ -150,12 +147,12 @@
     </section>
 
     <section id="tab-overview" class="card" style="display:none;">
-      <h2>Review responses</h2>
-      <p class="hint">Shared codes allow responses without verifying identity. Review the name and answers, then choose which sheet to use. Only accepted sheets go to the generator.</p>
+      <h2>Response history</h2>
+      <p class="hint">A valid code authorizes availability to be saved automatically to its folder. Every submission creates a separate employee entry automatically. Repeated names receive a number. Existing availability is never overwritten.</p>
       <button id="refreshIntakeBtn" class="secondary">Refresh responses</button>
       <p id="intakeMsg" role="status"></p>
       <div id="intakeArea"></div>
-      <h2>Accepted availability</h2>
+      <h2>Current availability</h2>
       <div id="overviewArea"></div>
 
       <div id="editAvailabilityModal" class="card" style="display:none; position:fixed; top:5%; left:5%; right:5%; bottom:5%; z-index:1000; overflow-y:auto; box-shadow:0 8px 24px rgba(0,0,0,0.3); background:white;">
@@ -206,8 +203,6 @@
         <button id="createCodeBtn">Create code</button>
       </div>
       <div class="row">
-        <button id="openCodeCollectionBtn" class="secondary">Open folder for submissions</button>
-        <button id="closeCodeCollectionBtn" class="secondary">Close folder for submissions</button>
         <button id="refreshCodesBtn" class="secondary">Refresh codes</button>
         <label><input id="showDeletedCodes" type="checkbox"> Show deleted</label>
       </div>

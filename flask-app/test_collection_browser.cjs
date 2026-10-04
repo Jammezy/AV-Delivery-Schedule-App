@@ -20,11 +20,11 @@ const server=spawn(python,['app.py'],{cwd:__dirname,env,stdio:'ignore'});
  await admin.locator(`[data-invitecode="${code.id}"]`).click();const invitation=await admin.evaluate(()=>navigator.clipboard.readText());assert.ok(invitation.includes(code.code));
  await admin.locator('#createCodeBtn').click();await admin.waitForFunction(()=>CODE_ROWS.length===2);let second=await admin.evaluate(()=>CODE_ROWS[0]);
  // The Codes dropdown selects the same folder as the rest of the supervisor UI.
- await admin.locator('#newFolderName').fill('Next scheduling folder');await admin.locator('#activateNewFolder').uncheck();await admin.locator('#createFolderBtn').click();
+ await admin.locator('#newFolderName').fill('Next scheduling folder');await admin.locator('#createFolderBtn').click();
  await admin.waitForFunction(()=>FOLDERS.some(f=>f.name==='Next scheduling folder') && FOLDER_ID!==ACTIVE_FOLDER);
  await admin.evaluate(()=>renderCodes());const nextFolder=await admin.evaluate(()=>FOLDER_ID);
  assert.equal(await admin.locator('#codesFolderSelect').inputValue(),String(nextFolder));assert.equal(await admin.evaluate(()=>CODE_ROWS.length),0);
- assert.equal(await admin.locator('#collectionResponseCap').inputValue(),'100');assert.match(await admin.locator('#codesCollectionStatus').innerText(),/Closed for submissions/);
+ assert.equal(await admin.locator('#collectionResponseCap').inputValue(),'100');assert.match(await admin.locator('#codesCollectionStatus').innerText(),/Codes accept submissions/);
  await admin.locator('#createCodeBtn').click();await admin.waitForFunction(()=>CODE_ROWS.length===1);const nextCode=await admin.evaluate(()=>CODE_ROWS[0]);assert.equal(nextCode.folderId,nextFolder);
  assert.equal(await admin.evaluate(()=>ACTIVE_FOLDER),code.folderId);
  await admin.locator('#tab-codes details').evaluate(el=>el.open=true);await admin.locator('#collectionResponseCap').fill('150');await admin.locator('#saveCollectionCapBtn').click();
@@ -53,15 +53,22 @@ const server=spawn(python,['app.py'],{cwd:__dirname,env,stdio:'ignore'});
  await admin.locator('#refreshCodesBtn').click();await admin.waitForFunction(()=>CODE_ROWS.find(c=>c.id===Number(document.querySelector('[data-copycode]').dataset.copycode)) && CODE_ROWS.some(c=>c.received===1));
  assert.match(await admin.locator('#codesTable').innerText(),/1 \/ 30/);
  await admin.locator('[data-tab="overview"]').click();await admin.waitForFunction(()=>INTAKE_ROWS.length===1);await admin.locator('details[data-intakerow]').click();assert.equal(await admin.locator('#intakeArea img').count(),0);
- // Add/accept roster employee, then submit a new sheet without overwriting.
- await admin.locator('[data-tab="employees"]').click();await admin.locator('#newEmpName').fill('Alex');await admin.locator('#addEmpBtn').click();await admin.waitForFunction(()=>EMPLOYEES.some(e=>e.name==='Alex'));
- await admin.locator('[data-tab="overview"]').click();await admin.locator('#refreshIntakeBtn').click();await admin.waitForFunction(()=>INTAKE_EMPLOYEES.some(e=>e.name==='Alex'));
- await admin.locator('details[data-intakerow]').click();admin.once('dialog',d=>d.accept());await admin.locator('[data-acceptintake]').click();await admin.waitForFunction(()=>INTAKE_ROWS[0].status==='Accepted');
- await employee.locator('#newSheetBtn').click();await employee.locator('#nameInput').fill('Alex');await employee.locator('#commentInput').fill('Updated sheet');await employee.locator('#submitBtn').click();await employee.waitForFunction(()=>document.querySelector('#msgArea').textContent.includes('Saved'));
- await admin.locator('#refreshIntakeBtn').click();await admin.waitForFunction(()=>INTAKE_ROWS.length===2);
+ // A valid code immediately adds the employee and saves their availability.
+ assert.equal(await admin.evaluate(()=>INTAKE_ROWS[0].status),'Accepted');
+ assert.ok(await admin.evaluate(()=>INTAKE_ROWS[0].employeeId));
+ assert.equal(await admin.locator('[data-acceptintake],[data-rejectintake],[data-intakeemployee]').count(),0);
  assert.equal(await admin.evaluate(()=>OVERVIEW.comments.Alex),'<img src=x onerror=alert(1)>');
+ await admin.locator('[data-tab="employees"]').click();await admin.waitForFunction(()=>EMPLOYEES.some(e=>e.name==='Alex'));
+ assert.equal(await admin.evaluate(()=>EMPLOYEES.filter(e=>e.name==='Alex').length),1);
+ await admin.locator('[data-tab="overview"]').click();
+ await employee.locator('#newSheetBtn').click();assert.equal(await employee.locator('#submitBtn').isDisabled(),true);await employee.locator('#collectionCode').fill(code.code);await employee.locator('#unlockBtn').click();await employee.locator('#codeGate').waitFor({state:'hidden'});await employee.locator('#nameInput').fill('Alex');await employee.locator('#commentInput').fill('Updated sheet');await employee.locator('#submitBtn').click();await employee.waitForFunction(()=>SAVED);
+ await admin.locator('#refreshIntakeBtn').click();await admin.waitForFunction(()=>INTAKE_ROWS.length===2 && OVERVIEW.comments['Alex (2)']==='Updated sheet');
+ assert.equal(await admin.evaluate(()=>INTAKE_ROWS.filter(r=>r.status==='Accepted').length),2);
+ assert.equal(await admin.evaluate(()=>INTAKE_ROWS.filter(r=>r.status==='Superseded').length),0);
+ assert.equal(await admin.evaluate(()=>OVERVIEW.comments.Alex),'<img src=x onerror=alert(1)>');
+ await employee.evaluate(value=>window.CODE_FOR_TEST=value,code.code);
  // Quota fill using the employee's legitimate session (synthetic requests only).
- const results=await employee.evaluate(async()=>{const statuses=[];for(let i=0;i<29;i++){const r=await fetch('/api/availability',{method:'POST',headers:{'Content-Type':'application/json','X-Submission-CSRF':CSRF},body:JSON.stringify({name:'Synthetic '+i,availability:{},comment:'',folderId:CONTEXT.folder.id,revision:CONTEXT.revision,requestId:crypto.randomUUID()})});statuses.push(r.status);}return statuses;});
+ const results=await employee.evaluate(async()=>{const statuses=[];for(let i=0;i<29;i++){const gate=await fetch('/api/collection/unlock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:CODE_FOR_TEST})});if(!gate.ok){statuses.push(gate.status);continue;}const unlocked=await gate.json();const r=await fetch('/api/availability',{method:'POST',headers:{'Content-Type':'application/json','X-Submission-CSRF':unlocked.csrf || CSRF},body:JSON.stringify({name:'Synthetic '+i,availability:{},comment:'',folderId:CONTEXT.folder.id,revision:CONTEXT.revision,requestId:crypto.randomUUID()})});statuses.push(r.status);}return statuses;});
  assert.equal(results.filter(s=>s===200).length,28);assert.equal(results.at(-1),409);
  await admin.locator('[data-tab="codes"]').click();await admin.evaluate(()=>renderCodes());await admin.waitForFunction(()=>CODE_ROWS.some(c=>c.status==='Exhausted'));
  // Add two responses to only the exhausted code, retain the default for other codes.
@@ -70,7 +77,7 @@ const server=spawn(python,['app.py'],{cwd:__dirname,env,stdio:'ignore'});
  await admin.locator(`[data-addresponses="${code.id}"]`).click();const added=await addedResponse;assert.equal(added.status(),200,await added.text());assert.equal((await added.json()).responseLimit,32);
  await admin.waitForFunction(()=>CODE_ROWS.some(c=>c.responseLimit===32 && c.remaining===2 && c.status==='Active'));
  // An already open form refreshes the allowance before sending, without losing its draft.
- await employee.locator('#newSheetBtn').click();await employee.locator('#nameInput').fill('Fresh allowance');await employee.locator('#commentInput').fill('Keep this draft');
+ await employee.locator('#newSheetBtn').click();assert.equal(await employee.locator('#submitBtn').isDisabled(),true);await employee.locator('#collectionCode').fill(code.code);await employee.locator('#unlockBtn').click();await employee.locator('#codeGate').waitFor({state:'hidden'});await employee.locator('#nameInput').fill('Fresh allowance');await employee.locator('#commentInput').fill('Keep this draft');
  await employee.locator('#submitBtn').click();await employee.waitForFunction(()=>SAVED && CONTEXT.responseLimit===32);
  assert.match(await employee.locator('#codeResponseAllowance').innerText(),/32 responses total/);assert.equal(await employee.locator('#commentInput').inputValue(),'Keep this draft');
  assert.equal(await admin.evaluate(id=>CODE_ROWS.find(c=>c.id===id).responseLimit,second.id),30);
@@ -78,7 +85,7 @@ const server=spawn(python,['app.py'],{cwd:__dirname,env,stdio:'ignore'});
  await admin.waitForFunction(()=>CODE_ROWS.some(c=>c.responseLimit===32 && c.remaining===1));
  assert.match(await admin.locator('#codesTable').innerText(),/31 \/ 32/);
  await admin.locator(`[data-invitecode="${code.id}"]`).click();assert.match(await admin.evaluate(()=>navigator.clipboard.readText()),/32 responses total/);
- const extra=await employee.evaluate(async()=>{const statuses=[];for(let i=0;i<3;i++){const r=await fetch('/api/availability',{method:'POST',headers:{'Content-Type':'application/json','X-Submission-CSRF':CSRF},body:JSON.stringify({name:'Additional '+i,availability:{},comment:'',folderId:CONTEXT.folder.id,revision:CONTEXT.revision,requestId:crypto.randomUUID()})});statuses.push(r.status);}return statuses;});
+ const extra=await employee.evaluate(async()=>{const statuses=[];for(let i=0;i<3;i++){const gate=await fetch('/api/collection/unlock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:CODE_FOR_TEST})});if(!gate.ok){statuses.push(gate.status);continue;}const unlocked=await gate.json();const r=await fetch('/api/availability',{method:'POST',headers:{'Content-Type':'application/json','X-Submission-CSRF':unlocked.csrf || CSRF},body:JSON.stringify({name:'Additional '+i,availability:{},comment:'',folderId:CONTEXT.folder.id,revision:CONTEXT.revision,requestId:crypto.randomUUID()})});statuses.push(r.status);}return statuses;});
  assert.deepEqual(extra,[200,409,409]);
  await admin.locator('#refreshCodesBtn').click();await admin.waitForFunction(()=>CODE_ROWS.some(c=>c.responseLimit===32 && c.received===32 && c.remaining===0 && c.status==='Exhausted'));
  // Revocation stops an already unlocked session; deleting preserves received sheets.
@@ -94,5 +101,5 @@ const server=spawn(python,['app.py'],{cwd:__dirname,env,stdio:'ignore'});
  fs.mkdirSync(path.join(__dirname,'test-browser-output'),{recursive:true});await admin.screenshot({path:path.join(__dirname,'test-browser-output/codes-supervisor.png'),fullPage:true});
  await employee.screenshot({path:path.join(__dirname,'test-browser-output/codes-employee-mobile.png'),fullPage:true});
  await admin.locator('#logoutBtn').click();await admin.locator('#loginCard').waitFor({state:'visible'});assert.equal(await admin.locator('#codesTable').innerText(),'');
- console.log('PASS collection browser: default 30, add per-code responses, persisted limits/invitations, exact quota, private form, immutable review, mobile controls, revoke/delete, logout clearing.');
+ console.log('PASS collection browser: default 30, add per-code responses, persisted limits/invitations, exact quota, private form, independent employee entries and mandatory code re-entry, mobile controls, revoke/delete, logout clearing.');
 }finally{if(browser)await browser.close();server.kill();fs.rmSync(dir,{recursive:true,force:true});}})().catch(e=>{console.error(e);process.exitCode=1;});

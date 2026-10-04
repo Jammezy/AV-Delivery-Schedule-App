@@ -33,15 +33,12 @@ function renderFolderControls() {
     $("codesFolderSelect").disabled = !FOLDERS.length || DELETION_BUSY;
     const archived = FOLDERS.find(f => f.id === FOLDER_ID)?.archived;
     $("createCodeBtn").disabled = !FOLDER_ID || archived || DELETION_BUSY;
-    $("openCodeCollectionBtn").disabled = !FOLDER_ID || archived || DELETION_BUSY;
-    $("closeCodeCollectionBtn").disabled = !FOLDER_ID || ACTIVE_FOLDER !== FOLDER_ID || DELETION_BUSY;
   }
-  for (const id of ["renameFolderBtn", "activateFolderBtn", "stopFolderBtn", "archiveFolderBtn", "deleteFolderBtn", "generateBtn", "regenerateBtn", "wkndGenerateBtn"]) {
+  for (const id of ["renameFolderBtn", "archiveFolderBtn", "deleteFolderBtn", "generateBtn", "regenerateBtn", "wkndGenerateBtn"]) {
     $(id).disabled = !FOLDER_ID || DELETION_BUSY;
   }
   $("downloadBtn").disabled = DELETION_BUSY || !FOLDER_ID;
-  const active = FOLDERS.find(f => f.id === ACTIVE_FOLDER);
-  $("folderStatus").textContent = active ? `Accepting submissions: ${active.name}` : "No folder is accepting submissions.";
+  $("folderStatus").textContent = "Codes determine where submissions are saved. Viewing a folder does not change their destination.";
 }
 function clearFolderView() {
   if (typeof clearCollectionView === "function") clearCollectionView();
@@ -441,14 +438,12 @@ function setupFolders() {
     await loadFolders();
   };
   $("createFolderBtn").onclick = async () => {
-    const r = await apiSend("/api/folders", "POST", {name:$("newFolderName").value, activate:$("activateNewFolder").checked});
+    const r = await apiSend("/api/folders", "POST", {name:$("newFolderName").value, activate:false});
     if (!r) return;
     if (!r.ok) { $("folderMsg").textContent = r.data.error; return; }
     $("newFolderName").value = ""; await loadFolders(r.data.id);
   };
   $("renameFolderBtn").onclick = () => { const name = prompt("Folder name", FOLDERS.find(f => f.id === FOLDER_ID)?.name); if (name !== null) update({name}); };
-  $("activateFolderBtn").onclick = () => update({activate:true});
-  $("stopFolderBtn").onclick = () => update({activate:false});
   $("archiveFolderBtn").onclick = () => update({archived:!FOLDERS.find(f => f.id === FOLDER_ID)?.archived});
   document.addEventListener("click", e => {
     // A save may redraw its button before the click bubbles to document. Use
