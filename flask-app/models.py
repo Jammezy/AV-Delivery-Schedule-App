@@ -111,6 +111,66 @@ class AdminSession(BaseModel):
     expires_at = DateTimeField()
 
 
+class CollectionSettings(BaseModel):
+    folder = ForeignKeyField(Folder, unique=True, on_delete="CASCADE")
+    response_cap = IntegerField(default=300)
+    received = IntegerField(default=0)
+
+
+class CollectionCode(BaseModel):
+    folder = ForeignKeyField(Folder, on_delete="CASCADE")
+    verifier = CharField(unique=True)
+    encrypted_code = TextField()
+    label = CharField(default="")
+    received = IntegerField(default=0)
+    revoked = BooleanField(default=False)
+    deleted = BooleanField(default=False)
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    expires_at = DateTimeField(null=True)
+
+
+class IntakeSubmission(BaseModel):
+    folder = ForeignKeyField(Folder, on_delete="CASCADE")
+    code = ForeignKeyField(CollectionCode, on_delete="RESTRICT")
+    name = CharField()
+    data_json = TextField()
+    comment = TextField(default="")
+    allow_extra_openings = BooleanField(default=False)
+    allow_extra_closings = BooleanField(default=False)
+    consent_context = TextField(null=True)
+    submitted_at = DateTimeField(default=datetime.datetime.utcnow)
+    status = CharField(default="Pending")
+    employee = ForeignKeyField(Employee, null=True, on_delete="SET NULL")
+    review_version = IntegerField(default=0)
+    accepted_fingerprint = CharField(null=True)
+    parent_id = IntegerField(null=True)
+    request_key = CharField(unique=True)
+    payload_hash = CharField()
+
+
+class EditGrant(BaseModel):
+    submission = ForeignKeyField(IntakeSubmission, on_delete="CASCADE")
+    token_hash = CharField(unique=True)
+    expires_at = DateTimeField()
+    revoked = BooleanField(default=False)
+    redeemed = BooleanField(default=False)
+
+
+class SubmissionSession(BaseModel):
+    code = ForeignKeyField(CollectionCode, on_delete="CASCADE")
+    token_hash = CharField(unique=True)
+    state_revision = IntegerField()
+    expires_at = DateTimeField()
+    edit_grant = ForeignKeyField(EditGrant, null=True, on_delete="CASCADE")
+
+
+class RateBucket(BaseModel):
+    # Fixed slot space, no attacker-selected identifiers or unbounded rows.
+    slot = IntegerField(primary_key=True)
+    window = IntegerField()
+    count = IntegerField(default=0)
+
+
 @contextmanager
 def write_transaction():
     # Serialize migration and folder/submission changes across server workers.
@@ -224,7 +284,8 @@ def init_db():
     db.connect(reuse_if_open=True)
     with write_transaction():
         db.create_tables([Employee, Availability, Config, Folder, SubmissionState,
-                          FolderAvailability, SavedSchedule, SavedWeekendSchedule, AdminSession])
+                          FolderAvailability, SavedSchedule, SavedWeekendSchedule, AdminSession, CollectionSettings,
+                          CollectionCode, IntakeSubmission, EditGrant, SubmissionSession, RateBucket])
         # Additive, serialized, transactional migration; preserve every existing row.
         from playhouse.migrate import SqliteMigrator, PostgresqlMigrator, migrate
         migrator = PostgresqlMigrator(db) if isinstance(db, PostgresqlDatabase) else SqliteMigrator(db)

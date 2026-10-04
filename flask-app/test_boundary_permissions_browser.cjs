@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {spawn,spawnSync} = require('node:child_process');
 const {chromium} = require('playwright');
+const {testKeys,collectionFixture}=require('./browser_collection_fixture.cjs');
 const fixture = `
 import json
 import app
@@ -22,7 +23,7 @@ with db.connection_context(), write_transaction():
 `;
 async function check(viewport) {
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'permission-browser-'));
-  const env={...process.env,DATABASE_URL:'',DATABASE_PATH:path.join(directory,'test.db'),ADMIN_PASSWORD:'browser-test',PORT:'5096'};
+  const env={...process.env,...testKeys(process.env.PYTHON||'python'),DATABASE_URL:'',DATABASE_PATH:path.join(directory,'test.db'),ADMIN_PASSWORD:'browser-test',PORT:'5096'};
   const python=process.env.PYTHON||'python';
   const setup=spawnSync(python,['-c',fixture],{cwd:__dirname,env,encoding:'utf8'});
   assert.equal(setup.status,0,setup.error?.message||setup.stderr);
@@ -33,7 +34,7 @@ async function check(viewport) {
       try {if((await fetch('http://127.0.0.1:5096/healthz')).ok)break;}catch{}
       await new Promise(r=>setTimeout(r,100));
     }
-    browser=await chromium.launch({headless:true});
+    browser=await chromium.launch({headless:true,...process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH,args:['--no-sandbox']}: {}});
     const page=await browser.newPage({viewport});
     await page.route('https://cdnjs.cloudflare.com/**',route=>route.abort());
     await page.goto('http://127.0.0.1:5096/admin.html');
@@ -64,9 +65,8 @@ async function check(viewport) {
     for(const key of ['availability','comment','submittedAt'])assert.deepEqual((await current())[key],initial.submissions[0][key]);
     const employee=await browser.newPage({viewport});
     await employee.goto('http://127.0.0.1:5096/');
-    await employee.waitForFunction(()=>typeof document.querySelector('#loadBtn').onclick==='function');
-    await employee.locator('#nameInput').fill('Alex');await employee.locator('#loadBtn').click();
-    await employee.waitForFunction(()=>document.querySelector('#msgArea').textContent.includes('Loaded'));
+    const fixtureAPI=await collectionFixture(page,'http://127.0.0.1:5096');
+    await fixtureAPI.open(employee,'Alex');
     const token=(await current()).consent.consentContext;
     for(const [minimum,openings] of [[2,1],[4,0],[2,1]]) {
       const response=await page.request.put('http://127.0.0.1:5096/api/config',{headers,data:{minShiftLength:minimum,allowPreferredBoundaryExtras:true}});
@@ -93,6 +93,7 @@ async function check(viewport) {
     await page.unroute('**/api/admin/boundary-permissions');
     await employee.locator('#allowExtraClosings').uncheck();await employee.locator('#submitBtn').click();
     await employee.waitForFunction(()=>document.querySelector('#msgArea').textContent.includes('Saved'));
+    await fixtureAPI.accept('Alex');
     await page.locator('#saveBoundaryPermissions').click();
     await page.locator('#reloadBoundaryPermissions').waitFor({state:'visible'});
     assert.equal(await page.locator('#supervisorExtraOpenings').isChecked(),false);

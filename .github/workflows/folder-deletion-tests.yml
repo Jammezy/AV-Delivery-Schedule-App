@@ -36,7 +36,7 @@ jobs:
       - run: pip install -r requirements.txt
       - run: npm install --no-save jsdom@30.1.0 exceljs@4.4.0 playwright@1.58.2
       - run: npx playwright install --with-deps chromium
-      - run: python -m unittest -v test_app test_boundary 2>&1 | tee test-backend.log
+      - run: python -m unittest -v test_app test_boundary test_collection_codes 2>&1 | tee test-backend.log
         if: ${{ !cancelled() }}
       - run: node test_frontend.cjs 2>&1 | tee test-frontend.log
         if: ${{ !cancelled() }}
@@ -44,6 +44,12 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           TEST_POSTGRES_PORT: ${{ job.services.postgres.ports['5432'] }}
+      - run: python test_collection_postgres.py 2>&1 | tee test-code-postgres.log
+        if: ${{ !cancelled() }}
+        env:
+          TEST_POSTGRES_PORT: ${{ job.services.postgres.ports['5432'] }}
+      - run: node test_collection_browser.cjs 2>&1 | tee test-code-browser.log
+        if: ${{ !cancelled() }}
       - run: node test_deletion_browser.cjs 2>&1 | tee test-browser.log
         if: ${{ !cancelled() }}
       - run: node test_retention_browser.cjs 2>&1 | tee test-retention-browser.log
@@ -64,7 +70,7 @@ jobs:
           script: |
             const fs = require('fs');
             let summary = '';
-            for (const kind of ['backend','frontend','postgres','browser','retention-browser','request-retention-browser','boundary-browser','supervisor-browser','permissions-browser','solver']) {
+            for (const kind of ['backend','frontend','postgres','code-postgres','code-browser','browser','retention-browser','request-retention-browser','boundary-browser','supervisor-browser','permissions-browser','solver']) {
               const path = `flask-app/test-${kind}.log`;
               if (fs.existsSync(path)) summary += `### ${kind}\n\n\`\`\`text\n${fs.readFileSync(path,'utf8').slice(-13000)}\n\`\`\`\n\n`;
             }

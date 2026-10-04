@@ -40,11 +40,13 @@ with db.connection_context():
     assert FolderAvailability.select().count()==1
     assert SavedSchedule.select().count()==1
 `);
-    browser=await chromium.launch({headless:true});
+    browser=await chromium.launch({headless:true,...process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH,args:['--no-sandbox']}: {}});
     const page=await browser.newPage({viewport});
     await page.route('https://cdnjs.cloudflare.com/**',route=>route.abort());
     await page.goto('http://127.0.0.1:5099/');
-    await page.locator('#rosterList option').waitFor({state:'attached'});
+    await page.waitForFunction(()=>typeof document.querySelector('#submitBtn').onclick==='function');
+    assert.equal(await page.locator('#rosterList').count(),0);
+    assert.equal(await page.locator('#codeGate').isVisible(),true);
     execute(`from models import *
 with db.connection_context():
     assert FolderAvailability.select().count()==0
@@ -53,8 +55,8 @@ with db.connection_context():
     assert Folder.select().count()==1
     assert Employee.select().count()==1
 `);
-    await page.locator('#nameInput').fill('Retained employee');
-    assert.equal(await page.locator('#submitBtn').isEnabled(),true);
+    assert.equal(await page.locator('#submitBtn').isEnabled(),false);
+    assert.equal(await page.locator('#availabilityForm').isVisible(),false);
     console.log('PASS first website visit removes only expired records at '+viewport.width+'x'+viewport.height);
   } finally {
     if (browser) await browser.close();

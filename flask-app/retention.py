@@ -5,11 +5,13 @@ from contextlib import contextmanager
 
 from peewee import PostgresqlDatabase, SqliteDatabase, fn
 from models import (db, write_transaction, Folder, FolderAvailability, Availability,
-                    SavedSchedule, SavedWeekendSchedule, SubmissionState)
+                    SavedSchedule, SavedWeekendSchedule, SubmissionState, IntakeSubmission, CollectionCode)
 
 CHILDREN = (("availability", FolderAvailability, FolderAvailability.submitted_at),
             ("weekdaySchedules", SavedSchedule, SavedSchedule.created_at),
-            ("weekendSchedules", SavedWeekendSchedule, SavedWeekendSchedule.created_at))
+            ("weekendSchedules", SavedWeekendSchedule, SavedWeekendSchedule.created_at),
+            ("intakeResponses", IntakeSubmission, IntakeSubmission.submitted_at),
+            ("collectionCodes", CollectionCode, CollectionCode.created_at))
 AGED = CHILDREN + (("legacyAvailability", Availability, Availability.submitted_at),
                    ("folders", Folder, Folder.created_at))
 
@@ -74,8 +76,15 @@ def _folder_candidates(cutoff, after_cleanup=False):
     return query
 
 
+def _eligible(model, field, cutoff):
+    condition = _expired(field, cutoff)
+    if model is CollectionCode:
+        condition &= ~fn.EXISTS(IntakeSubmission.select(IntakeSubmission.id).where(IntakeSubmission.code == CollectionCode.id))
+    return condition
+
+
 def _counts(cutoff, after_cleanup=False):
-    counts = {key: model.select().where(_expired(field, cutoff)).count()
+    counts = {key: model.select().where(_eligible(model, field, cutoff)).count()
               for key, model, field in AGED if model is not Folder}
     counts["folders"] = _folder_candidates(cutoff, after_cleanup).count()
     return counts
@@ -135,10 +144,10 @@ def run_retention(*, now=None, apply=False, max_rows=1000, timeout_ms=5000,
             for key, model, field in AGED:
                 if model is Folder:
                     continue
-                ids = [r.id for r in model.select(model.id).where(_expired(field, cutoff))
+                ids = [r.id for r in model.select(model.id).where(_eligible(model, field, cutoff))
                        .order_by(field, model.id).limit(budget)] if budget else []
                 if ids:
-                    deleted[key] = model.delete().where(model.id.in_(ids) & _expired(field, cutoff)).execute()
+                    deleted[key] = model.delete().where(model.id.in_(ids) & _eligible(model, field, cutoff)).execute()
                     budget -= deleted[key]
             ids = [r.id for r in _folder_candidates(cutoff).order_by(Folder.created_at, Folder.id).limit(budget)] if budget else []
             for folder_id in ids:

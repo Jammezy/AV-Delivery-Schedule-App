@@ -18,6 +18,7 @@ from models import (
     db, init_db, Employee, Availability, get_config, save_config,
     normalize_level, Folder, SubmissionState, FolderAvailability,
     SavedSchedule, SavedWeekendSchedule, AdminSession, write_transaction,
+    IntakeSubmission, CollectionCode, CollectionSettings,
 )
 import solver as solver_module
 import weekend_generator
@@ -29,10 +30,9 @@ app.logger.setLevel('INFO')
 app.config['REQUEST_RETENTION_ENABLED'] = os.environ.get('REQUEST_RETENTION_ENABLED', 'true') == 'true'
 request_retention = RequestRetention()
 
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
-if ADMIN_PASSWORD == "admin123":
-    print("\n*** Using the default admin password 'admin123'. Set ADMIN_PASSWORD "
-          "before anyone else can reach this site. ***\n")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+if not ADMIN_PASSWORD or ADMIN_PASSWORD == "admin123":
+    raise RuntimeError("Set a unique ADMIN_PASSWORD before starting the app.")
 
 TOKEN_TTL = datetime.timedelta(hours=8)
 MAX_LOGIN_ATTEMPTS = 10
@@ -101,13 +101,13 @@ def require_admin(fn):
 
 @app.post("/api/admin/login")
 def login():
-    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "?").split(",")[0]
+    ip = request.remote_addr or "?"
     cutoff = now() - LOGIN_WINDOW
     _login_attempts[ip] = [t for t in _login_attempts[ip] if t > cutoff]
     if len(_login_attempts[ip]) >= MAX_LOGIN_ATTEMPTS:
         return jsonify({"error": "Too many attempts. Wait 15 minutes."}), 429
 
-    data = request.get_json(silent=True) or {}
+    data = body()
     if not secrets.compare_digest(str(data.get("password") or ""), ADMIN_PASSWORD):
         _login_attempts[ip].append(now())
         return jsonify({"error": "Incorrect password"}), 401
@@ -128,18 +128,25 @@ def logout():
 def no_cache(response):
     if request.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
     return response
 
 
 @app.errorhandler(DatabaseError)
 def database_error(error):
-    app.logger.exception("Database operation failed")
+    app.logger.error("Database operation failed (%s)", type(error).__name__)
     return jsonify(error="Unable to save or load data. Your entries have not been cleared; please retry."), 503
 
 
 @app.errorhandler(400)
 @app.errorhandler(404)
 @app.errorhandler(409)
+@app.errorhandler(401)
+@app.errorhandler(403)
+@app.errorhandler(429)
+@app.errorhandler(503)
 def request_error(error):
     return jsonify(error=error.description), error.code
 
@@ -220,7 +227,11 @@ def update_boundary_permissions():
 # ---------------- config ----------------
 @app.get("/api/config")
 def get_config_route():
-    return jsonify(get_config())
+    from collection_codes import PUBLIC_FIELDS
+    cfg = get_config()
+    # Supervisor bearer credentials can obtain all settings; public fields contain no roster.
+    session = AdminSession.get_or_none(AdminSession.token_hash == token_hash())
+    return jsonify(cfg if session and session.expires_at > now() else {k: cfg[k] for k in PUBLIC_FIELDS if k in cfg})
 
 
 @app.put("/api/config")
@@ -246,9 +257,9 @@ def serialize(e):
 
 
 @app.get("/api/roster")
-def public_roster():
-    """Names only, so the availability form can offer autocomplete
-    instead of trusting free text and creating duplicate people."""
+@require_admin
+def supervisor_roster():
+    """Legacy roster lookup restricted to supervisors."""
     cfg = get_config()
     return jsonify({
         "names": sorted(e.name for e in Employee.select()),
@@ -315,12 +326,9 @@ def delete_employee(name):
 
 @app.get("/api/submission-context")
 def submission_context():
+    from collection_codes import public_context
     with write_transaction():
-        state = SubmissionState.get_by_id(1)
-        result = {"folder": folder_json(state.active_folder) if state.active_folder_id else None,
-                  "revision": state.revision, "config": get_config()}
-        result['boundaryContext'] = boundary_context(result['config'])
-    return jsonify(result)
+        return jsonify(public_context())
 
 
 @app.get("/api/folders")
@@ -392,7 +400,9 @@ def deletion_scope(folder):
     counts = {}
     for key, model in (("availabilitySubmissions", FolderAvailability),
                        ("weekdaySchedules", SavedSchedule),
-                       ("weekendSchedules", SavedWeekendSchedule)):
+                       ("weekendSchedules", SavedWeekendSchedule),
+                       ("unverifiedResponses", IntakeSubmission),
+                       ("collectionCodes", CollectionCode)):
         include(key)
         counts[key] = 0
         for row in model.select().where(model.folder == folder.id).order_by(model.id).dicts():
@@ -429,6 +439,9 @@ def delete_folder(folder_id):
         SavedSchedule.delete().where(SavedSchedule.folder == folder.id).execute()
         SavedWeekendSchedule.delete().where(SavedWeekendSchedule.folder == folder.id).execute()
         FolderAvailability.delete().where(FolderAvailability.folder == folder.id).execute()
+        IntakeSubmission.delete().where(IntakeSubmission.folder == folder.id).execute()
+        CollectionCode.delete().where(CollectionCode.folder == folder.id).execute()
+        CollectionSettings.delete().where(CollectionSettings.folder == folder.id).execute()
         folder.delete_instance()
     return jsonify(ok=True, deletedFolderId=folder_id, deletedCounts=preview["counts"])
 
@@ -459,59 +472,10 @@ def recheck_generation_inputs(folder, version, employee_ids=None):
         abort(409, "Availability changed or expired. Refresh and generate a fresh preview.")
 
 
-@app.post("/api/availability")
-def submit_availability():
-    data = body()
-    name, comment, availability = data.get("name"), data.get("comment", ""), data.get("availability")
-    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
-        abort(400, "Enter a name of 1–100 characters.")
-    if not isinstance(comment, str) or len(comment) > 99:
-        abort(400, "Comments must be shorter than 100 characters.")
-    if not isinstance(availability, dict):
-        abort(400, "Availability must be an object.")
-    with write_transaction():
-        state = SubmissionState.get_by_id(1)
-        if not state.active_folder_id:
-            abort(409, "No folder is accepting submissions.")
-        if data.get("folderId") != state.active_folder_id or data.get("revision") != state.revision:
-            abort(409, "The submission folder changed. Refresh the form and confirm the current folder before submitting.")
-        folder_or_404(state.active_folder_id)
-        cfg = get_config()
-        consent_fields = ('allowExtraOpenings', 'allowExtraClosings')
-        explicit_consent = any(k in data for k in consent_fields)
-        if explicit_consent:
-            if any(type(data.get(k)) is not bool for k in consent_fields):
-                abort(400, 'Both consent choices must be explicit booleans.')
-            if data.get('consentContext') != boundary_context(cfg)['token']:
-                abort(409, 'Limits or shift blocks changed. Refresh and reconfirm your consent choices.')
-        valid = {f"{d}_{h:02d}" for d in cfg['availabilityDays'] for h in range(cfg["hourStart"], cfg["hourEnd"] + 1)}
-        if any(k not in valid or (type(v) not in (int, bool) or v not in (0, 1, 2)) for k, v in availability.items()):
-            abort(400, "Invalid availability time slot. Refresh the form and try again.")
-        name = resolve_name(name)
-        employee = Employee.get_or_none(Employee.name == name)
-        if employee is None:
-            if not cfg.get("allowSelfRegister", True):
-                abort(400, "That name is not on the roster. Ask your supervisor to add you.")
-            employee = Employee.create(name=name)
-        row, _ = FolderAvailability.get_or_create(employee=employee, folder=state.active_folder_id)
-        row.data_json = json.dumps(availability)
-        row.comment = comment
-        row.allow_extra_openings = data.get('allowExtraOpenings', False)
-        row.allow_extra_closings = data.get('allowExtraClosings', False)
-        row.consent_context = boundary_context(cfg)['token'] if explicit_consent else None
-        row.submitted_at = datetime.datetime.utcnow()
-        row.save()
-    available = sum(normalize_level(v) > 0 for v in availability.values())
-    weekday_hours = sum(normalize_level(v) > 0 for k, v in availability.items() if k.split("_")[0] in cfg["days"])
-    return jsonify(ok=True, name=name, submittedAt=row.submitted_at.isoformat() + "Z",
-        availableHours=available, preferredHours=sum(normalize_level(v) == 2 for v in availability.values()),
-        minHours=employee.min_hours, maxHours=employee.max_hours,
-        shortOfMinimum=max(0, employee.min_hours - weekday_hours))
-
-
 @app.get("/api/availability/<path:name>")
+@require_admin
 def get_one_availability(name):
-    # Name-based access is legacy behavior, NOT employee authentication.
+    # Supervisor-only legacy lookup; shared codes never grant read access.
     state = SubmissionState.get_by_id(1)
     if not state.active_folder_id or request.args.get("folderId", type=int) != state.active_folder_id:
         abort(409, "The submission folder changed. Refresh and confirm the current folder.")
@@ -763,6 +727,8 @@ def healthz():
 # working database. The old version only did this under __main__, which
 # meant the first request on a real deployment died with "no such table".
 init_db()
+from collection_codes import register as register_collection_codes
+register_collection_codes(app, require_admin, permission_version, body, folder_or_404)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)

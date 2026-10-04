@@ -44,7 +44,7 @@ async function check(viewport) {
       try {const r=await fetch('http://127.0.0.1:5099/healthz');if(r.ok)break;}catch(_){}
       await new Promise(r=>setTimeout(r,100));
     }
-    browser=await chromium.launch({headless:true});
+    browser=await chromium.launch({headless:true,...process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH,args:['--no-sandbox']}: {}});
     const page=await browser.newPage({viewport});
     await page.route('https://cdnjs.cloudflare.com/**',route=>route.abort()); // Export is covered by frontend XLSX regression.
     await page.goto('http://127.0.0.1:5099/admin.html');
@@ -63,7 +63,7 @@ async function check(viewport) {
     await page.locator('#deleteFolderBtn').click();
     await page.locator('#deleteFolderDetails').getByText('Disposable Fall <2026>',{exact:true}).waitFor();
     const text=await page.locator('#deleteFolderDetails').textContent();
-    for(const expected of ['2 availability submissions','1 saved weekday','1 saved weekend','cannot be undone','roster entries','stops submissions'])assert.ok(text.includes(expected),expected);
+    for(const expected of ['2 accepted availability submissions','1 saved weekday','1 saved weekend','cannot be undone','roster entries','stops submissions'])assert.ok(text.includes(expected),expected);
     const box=await page.locator('#deleteFolderDialog').boundingBox();
     assert.ok(box.x>=0&&box.x+box.width<=viewport.width&&box.height<=viewport.height);
     await page.locator('#deleteFolderConfirmation').fill('wrong');assert.equal(await page.locator('#deleteFolderConfirmBtn').isDisabled(),true);

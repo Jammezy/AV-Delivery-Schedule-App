@@ -38,7 +38,7 @@ async function check(viewport) {
       try {if ((await fetch('http://127.0.0.1:5097/healthz')).ok) break;} catch {}
       await new Promise(resolve=>setTimeout(resolve,100));
     }
-    browser = await chromium.launch({headless:true});
+    browser = await chromium.launch({headless:true,...process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH,args:['--no-sandbox']}: {}});
     const page = await browser.newPage({viewport});
     await page.route('https://cdnjs.cloudflare.com/**',route=>route.abort());
     await page.goto('http://127.0.0.1:5097/admin.html');

@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const {spawn,spawnSync} = require('node:child_process');
 const {chromium} = require('playwright');
+const {testKeys,collectionFixture}=require('./browser_collection_fixture.cjs');
 const fixture = `
 import json
 import app
@@ -27,7 +28,7 @@ with db.connection_context(), write_transaction():
 `;
 async function check(viewport) {
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'boundary-browser-'));
-  const env={...process.env,DATABASE_URL:'',DATABASE_PATH:path.join(directory,'disposable.db'),ADMIN_PASSWORD:'browser-test',PORT:'5098'};
+  const env={...process.env,...testKeys(process.env.PYTHON||'python'),DATABASE_URL:'',DATABASE_PATH:path.join(directory,'disposable.db'),ADMIN_PASSWORD:'browser-test',PORT:'5098'};
   const python=process.env.PYTHON||'python';
   const setup=spawnSync(python,['-c',fixture],{cwd:__dirname,env,encoding:'utf8'});
   assert.equal(setup.status,0,setup.error?.message||setup.stderr);
@@ -38,7 +39,7 @@ async function check(viewport) {
       try {if((await fetch('http://127.0.0.1:5098/healthz')).ok)break;}catch{}
       await new Promise(r=>setTimeout(r,100));
     }
-    browser=await chromium.launch({headless:true});
+    browser=await chromium.launch({headless:true,...process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH,args:['--no-sandbox']}: {}});
     const page=await browser.newPage({viewport});
     // Hold configuration to verify the entire fieldset starts hidden, without a flash.
     let releaseContext;
@@ -48,8 +49,8 @@ async function check(viewport) {
     assert.equal(await page.locator('#boundaryChoices').isVisible(),false);
     releaseContext();
 
-    await page.waitForFunction(()=>typeof document.querySelector('#loadBtn').onclick==='function');
-    await page.locator('#nameInput').fill('Alex');await page.locator('#loadBtn').click();
+    const fixtureAPI=await collectionFixture(page,'http://127.0.0.1:5098');
+    await fixtureAPI.open(page,'Alex');
     await page.waitForFunction(()=>document.querySelector('#openingConsentNote').textContent.includes('3 fully preferred'));
     assert.match(await page.locator('#boundaryStatus').innerText(),/has not enabled/);
     assert.equal(await page.locator('#allowExtraOpenings').isChecked(),false);
@@ -57,7 +58,7 @@ async function check(viewport) {
     assert.equal(await page.locator('#allowExtraOpenings').isChecked(),true);
     assert.equal(await page.locator('#allowExtraClosings').isChecked(),false);
     await page.locator('#submitBtn').click();await page.waitForFunction(()=>document.querySelector('#msgArea').textContent.includes('Saved'));
-    await page.locator('#loadBtn').click();await page.waitForFunction(()=>document.querySelector('#msgArea').textContent.includes('Loaded'));
+    await fixtureAPI.accept('Alex');await fixtureAPI.open(page,'Alex');
     assert.equal(await page.locator('#allowExtraOpenings').isChecked(),true);
     // Keyboard erasing/painting, day fill, copying and clearing all recalculate visibility.
     await page.locator('[data-mode="0"]').click();
@@ -75,16 +76,17 @@ async function check(viewport) {
     page.once('dialog',dialog=>dialog.accept());await page.locator('#clearAllBtn').click();
     assert.equal(await page.locator('#boundaryChoices').isVisible(),false);
     assert.equal(await page.locator('#allowExtraOpenings').isChecked(),true);
-    await page.locator('#loadBtn').click();
+    await fixtureAPI.open(page,'Alex');
     await page.waitForFunction(()=>document.querySelector('#boundaryChoices').hidden===false);
     await page.locator('#boundaryChoices').scrollIntoViewIfNeeded();
     fs.mkdirSync(path.join(__dirname,'test-browser-output'),{recursive:true});
     await page.screenshot({path:path.join(__dirname,`test-browser-output/boundary-employee-${viewport.width}.png`),fullPage:true});
     const box=await page.locator('#boundaryChoices').boundingBox();assert.ok(box.x>=0&&box.x+box.width<=viewport.width+1);
-    await page.locator('#nameInput').fill('Blair');await page.locator('#loadBtn').click();
+    await fixtureAPI.open(page,'Blair');
     await page.waitForFunction(()=>document.querySelector('#closingConsentNote').textContent.includes('3 fully preferred'));
     await page.locator('#allowExtraClosings').check();await page.locator('#submitBtn').click();
     await page.waitForFunction(()=>document.querySelector('#msgArea').textContent.includes('Saved'));
+    await fixtureAPI.accept('Blair');
     const login=await page.request.post('http://127.0.0.1:5098/api/admin/login',{data:{password:'browser-test'}});
     const headers={Authorization:'Bearer '+(await login.json()).token};
     const overview=await (await page.request.get('http://127.0.0.1:5098/api/availability?folderId=1',{headers})).json();
@@ -103,8 +105,7 @@ async function check(viewport) {
     }
     await page.request.put('http://127.0.0.1:5098/api/config',{headers,data:{maxMorningShifts:3}});
     await page.reload();
-    await page.waitForFunction(()=>typeof document.querySelector('#loadBtn').onclick==='function');
-    await page.locator('#nameInput').fill('Alex');await page.locator('#loadBtn').click();
+    await fixtureAPI.open(page,'Alex');
     await page.locator('#reconfirmConsent').waitFor({state:'visible'});
     assert.equal(await page.locator('#submitBtn').isDisabled(),true);
     assert.equal(await page.locator('#boundaryChoices').isVisible(),false); // Equality at 3.
@@ -127,6 +128,7 @@ async function check(viewport) {
     assert.equal(await page.locator('#allowExtraOpenings').isChecked(),false);
     assert.equal(await page.locator('#submitBtn').isDisabled(),false);
     await page.locator('#submitBtn').click();await page.waitForFunction(()=>document.querySelector('#msgArea').textContent.includes('Saved'));
+    await fixtureAPI.accept('Alex');
     const saved=await (await page.request.get(`http://127.0.0.1:5098/api/folders/1/schedules/${generated.savedScheduleId}`,{headers})).json();
     assert.equal(saved.result.config.maxMorningShifts,2);
     assert.equal(saved.submissions.find(s=>s.employeeId===ids[0]).consent.allowExtraOpenings,true);

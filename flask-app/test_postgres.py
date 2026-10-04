@@ -48,7 +48,8 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=2) as workers:
 
 import app as web
 from models import db, Folder, FolderAvailability, SavedSchedule, get_config
-client = web.app.test_client()
+from legacy_test_client import LegacyFixtureClient
+client = LegacyFixtureClient(web.app)
 token = client.post('/api/admin/login',json={'password':'test-admin'}).json['token']
 headers = {'Authorization':'Bearer '+token}
 context = client.get('/api/submission-context').json
@@ -59,7 +60,7 @@ assert rows['availability']['Legacy'] == {'Mon_07':2,'Tue_07':1}
 assert get_config()['wFairness'] == 123
 
 def submit(name, ctx=context):
-    with web.app.test_client() as c:
+    with LegacyFixtureClient(web.app) as c:
         r = c.post('/api/availability',json={'name':name,'folderId':ctx['folder']['id'],
             'revision':ctx['revision'],'availability':{'Mon_07':2,'Sat_07':1},'comment':'Persistent'})
         assert r.status_code == 200, r.json
@@ -85,7 +86,7 @@ assert client.get('/api/folders',headers=headers).status_code == 401
 db.connect(reuse_if_open=True)
 FolderAvailability.update(submitted_at=datetime.datetime(2026,1,1)).execute()
 db.close()
-code = "from app import app; c=app.test_client(); x=c.get('/api/submission-context').json; r=c.get('/api/availability/Alex?folderId='+str(x['folder']['id'])); assert r.json['comment']=='Persistent'; assert r.json['availability']['Mon_07']==2"
+code = "from app import app; c=app.test_client(); x=c.get('/api/submission-context').json; t=c.post('/api/admin/login',json={'password':'test-admin'}).json['token']; r=c.get('/api/availability/Alex?folderId='+str(x['folder']['id']),headers={'Authorization':'Bearer '+t}); assert r.json['comment']=='Persistent'; assert r.json['availability']['Mon_07']==2"
 result = subprocess.run([sys.executable,'-c',code],cwd=Path(__file__).parent,env=os.environ,capture_output=True,text=True)
 assert result.returncode == 0, result.stderr
 print('PASS PostgreSQL: concurrent startup/migration, legacy preferences/settings, concurrent submissions, folder isolation, stale form rejection, saved snapshot, logout, and fresh-process persistence.')
@@ -123,9 +124,9 @@ class PostgresDeletionTests(RetentionTests, FolderDeletionTests, unittest.TestCa
         web.app.config['REQUEST_RETENTION_ENABLED'] = False
         with db.connection_context():
             db.execute_sql('TRUNCATE TABLE adminsession, savedweekendschedule, savedschedule, '
-                'folderavailability, submissionstate, folder, availability, employee, config RESTART IDENTITY')
+                'folderavailability, submissionstate, folder, availability, employee, config, ratebucket RESTART IDENTITY CASCADE')
         init_db()
-        self.client = web.app.test_client()
+        self.client = LegacyFixtureClient(web.app)
         token = self.client.post('/api/admin/login', json={'password': 'test-admin'}).json['token']
         self.headers = {'Authorization': 'Bearer ' + token}
 

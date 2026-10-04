@@ -33,7 +33,7 @@ with db.connection_context():
       try { if ((await fetch('http://127.0.0.1:5098/healthz')).ok) break; } catch (_) {}
       await new Promise(resolve=>setTimeout(resolve,100));
     }
-    browser = await chromium.launch({headless:true});
+    browser = await chromium.launch({headless:true,...process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH,args:['--no-sandbox']}: {}});
     const page = await browser.newPage({viewport});
     page.on('pageerror', error=>console.error('Browser error:', error.message));
     await page.route('https://cdnjs.cloudflare.com/**', route=>route.abort());
