@@ -20,6 +20,97 @@ OLD = CUTOFF - dt.timedelta(microseconds=1)
 
 
 class RetentionTests:
+    def request_cleanup(self):
+        from request_retention import RequestRetention
+        gate = RequestRetention()
+        self.addCleanup(web.app.config.update, REQUEST_RETENTION_ENABLED=False)
+        web.app.config['REQUEST_RETENTION_ENABLED'] = True
+        return patch.object(web, 'request_retention', gate)
+
+    def test_request_retention_visit_after_four_months_preserves_boundary(self):
+        folder_id = self.retention_fixture()
+        with db.connection_context():
+            SavedSchedule.create(folder=folder_id, created_at=CUTOFF, snapshot_json='{}')
+            SavedWeekendSchedule.create(folder=folder_id, created_at=CUTOFF + dt.timedelta(days=1), snapshot_json='{}')
+        with self.request_cleanup(), patch('request_retention.run_retention',
+                side_effect=lambda **kw: run_retention(now=NOW, **kw)) as cleanup:
+            # No visit means no cleanup; the first API read performs the real pass.
+            self.assertEqual(cleanup.call_count, 0)
+            response = self.client.get('/api/submission-context')
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json['folder']['id'], folder_id)
+            self.client.get('/api/roster')
+            self.assertEqual(cleanup.call_count, 1)
+        with db.connection_context():
+            self.assertEqual(FolderAvailability.select().count(), 0)
+            self.assertEqual(SavedSchedule.select().count(), 1)
+            self.assertEqual(SavedWeekendSchedule.select().count(), 1)
+
+    def test_request_retention_failure_rolls_back_and_does_not_break_visit(self):
+        folder_id = self.retention_fixture()
+        with db.connection_context():
+            SavedSchedule.create(folder=folder_id, created_at=OLD, snapshot_json='{}')
+        with self.request_cleanup(), patch.object(SavedSchedule, 'delete', side_effect=RuntimeError('private payload')):
+            with self.assertLogs(web.app.logger, level='WARNING') as logs:
+                response = self.client.get('/api/roster')
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn('private payload', ''.join(logs.output))
+            self.assertEqual(self.client.get('/api/roster').status_code, 200)
+        with db.connection_context():
+            self.assertEqual(FolderAvailability.select().count(), 1)
+            self.assertEqual(SavedSchedule.select().count(), 1)
+
+    def test_request_retention_rate_limit_backlog_retry_and_static_exclusion(self):
+        from request_retention import RequestRetention
+        gate = RequestRetention()
+        with self.request_cleanup(), patch.object(web, 'request_retention', gate), \
+                patch('request_retention.time.monotonic', return_value=100) as clock, \
+                patch('request_retention.run_retention', return_value={'backlogRemaining': True}) as cleanup:
+            self.client.get('/healthz')
+            self.client.get('/')
+            self.assertEqual(cleanup.call_count, 0)
+            self.client.get('/api/roster')
+            clock.return_value = 159
+            self.client.get('/api/roster')
+            self.assertEqual(cleanup.call_count, 1)
+            clock.return_value = 160
+            cleanup.return_value = {'backlogRemaining': False}
+            self.client.get('/api/roster')
+            clock.return_value = 161
+            self.client.get('/api/roster')
+            self.assertEqual(cleanup.call_count, 2)
+            clock.return_value = 86560
+            self.client.get('/api/roster')
+            self.assertEqual(cleanup.call_count, 3)
+
+    def test_retention_restores_connection_timeouts(self):
+        from peewee import PostgresqlDatabase
+        with db.connection_context():
+            query = 'SHOW lock_timeout' if isinstance(db, PostgresqlDatabase) else 'PRAGMA busy_timeout'
+            before = db.execute_sql(query).fetchone()
+            run_retention(now=NOW, apply=True, timeout_ms=200, statement_timeout_ms=5000)
+            self.assertEqual(db.execute_sql(query).fetchone(), before)
+
+    def test_request_retention_concurrent_visits_skip_busy_pass(self):
+        from request_retention import RequestRetention
+        gate = RequestRetention()
+        entered, release = threading.Event(), threading.Event()
+        def cleanup(**kwargs):
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return {'backlogRemaining': False}
+        with patch('request_retention.run_retention', side_effect=cleanup) as run:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(gate.maybe_run, web.app.logger)
+                try:
+                    self.assertTrue(entered.wait(5))
+                    second = pool.submit(gate.maybe_run, web.app.logger)
+                    second.result(timeout=1)
+                    self.assertEqual(run.call_count, 1)
+                finally:
+                    release.set()
+                first.result(timeout=5)
+
     def cleanup(self, **kwargs):
         with db.connection_context():
             return run_retention(now=NOW, **kwargs)

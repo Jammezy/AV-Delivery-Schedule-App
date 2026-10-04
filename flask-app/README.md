@@ -392,8 +392,8 @@ For manual review, use a disposable local database (never production Neon):
 
 `cleanup_retention.py` performs one bounded cleanup pass independently of Flask.
 It does **not** run during app startup, import solver modules, initialize storage,
-create tables, or migrate the database. This change alone does not enable a cron
-job or delete production data.
+create tables, or migrate the database. Separately, the app runs the same bounded
+cleanup on normal API requests by default after merge/deploy, as described below.
 
 The retention unit is a database record, not an uploaded file. Employee and
 supervisor availability saves reset `submitted_at`; retention uses that **latest
@@ -481,51 +481,46 @@ checks. Evaluate `(submitted_at, id)` / `(created_at, id)` indexes using query p
 before growing the workload or increasing the batch limit; apply any index change
 through the app's serialized migration process, never through this job.
 
-## Render cron setup and rollout after manual merge
+## Free automatic cleanup when the app is used
 
-1. Confirm the web service's secret connection maps to the intended Neon project,
-   branch and database. Recheck recovery coverage and historical timestamps. Make
-   a consistent PostgreSQL backup with a matching-version `pg_dump` client and
-   restore it into an isolated target; verify counts and app reads there before
-   enabling permanent deletion. The SQLite backup helper is not a Neon backup.
-2. Merge this PR manually, deploy the web changes, and verify its exact commit.
-3. Create a Render Cron Job using the same repository, branch `master`, root
-   `flask-app`, Python runtime, build `pip install -r requirements.txt`. Set its
-   command initially to `python cleanup_retention.py --max-rows 1000` (preview).
-   Use the same privately verified Neon `DATABASE_URL`, and the identity variables
-   above. Set `RETENTION_ENABLED=false`. Do not wire a Render database in place of
-   Neon. No cron is created by this PR.
-4. Trigger a preview manually and review eligible counts/invalid timestamps. After
-   validating recovery and preservation, set `RETENTION_ENABLED=true` and change
-   the command to `python cleanup_retention.py --apply --max-rows 1000`. Trigger one
-   bounded pass and inspect its committed/remaining counts before scheduling.
-5. Schedule daily at `0 8 * * *` (08:00 UTC: 2 AM Denver daylight time, 1 AM Denver
-   standard time). Expiration is handled on the next successful daily pass, so
-   normal latency is up to a day; failures/backlogs can extend it. Render cron
-   currently has a $1 monthly minimum; confirm pricing before provisioning.
-   [Official cron documentation](https://render.com/docs/cronjobs).
+Normal `/api/` requests run a bounded retention pass before reading or changing
+app data. Opening the employee or admin page makes these API requests, so using
+the website triggers cleanup. Static files and `/healthz` do not trigger it.
+No Render cron, GitHub schedule, extra service, new secret or repository activity
+is required. The existing app database connection is used, including Neon's
+pooled connection; cleanup settings are transaction-local and restored afterward.
 
-Monitor Render Runs for successful completion, duration, cutoff, deleted counts,
-invalid timestamps and backlog. Configure Render failure notifications; repeat
-failed runs only after investigating the cause. Suspend the cron or set
-`RETENTION_ENABLED=false` to stop apply runs (apply then fails visibly). Change the
-command back to preview for read-only monitoring. Check the last successful Run
-and its JSON counts; reverting code stops future cleanup but does not restore
-already deleted records.
+Cleanup is enabled by default after this change is manually merged and deployed.
+Set `REQUEST_RETENTION_ENABLED=false` on the web service to disable it temporarily.
+There is no automatic cleanup while the website is unused. After four months of
+inactivity, the next API request checks ages against that request's current UTC
+cutoff. Only records **strictly older than 18 calendar months** are eligible:
+exactly 18 months old and all newer records remain. Availability age still starts
+at the latest submission; consent-only edits do not extend it. Old folders remain
+while they contain newer or invalid-dated children. Shared infrastructure remains.
 
-Read-only environment inspection on October 3, 2026 (Denver; October 4 UTC) found
-the web service live at `544d5bf1983e08025fb0f5d0b626601e80909592`, using root
-`flask-app`, one free Virginia Python instance and the documented build/start
-commands. The confirmed Render workspace lists no cron. Supplied Neon production
-branch `br-sparkling-tooth-b4e1vefe` in `little-breeze-25412594`, database `neondb`,
-contains one folder and four submissions, with **zero expired records**. It has
-the nine expected tables, non-null naive age columns and no triggers. No payloads
-were read. The aggregate preview used the same strict UTC 18-month cutoff; it was
-not execution of the new command against production. The Render secret's exact
-endpoint mapping and historical timezone correctness were not independently
-verified. Neon reports six hours of restore history and no automatic snapshot
-schedule; this is not a validated restore test. Those rollout prerequisites remain
-for the owner before activation. No production configuration/data was changed.
+One server process attempts cleanup at most once per 24 hours after a successful
+pass with no backlog. Each pass commits at most 1,000 deletions. If a backlog
+remains, later API requests can trigger another pass after 60 seconds. A server
+restart resets this in-memory interval; multiple server processes may each run a
+pass. All passes share the app's database write lock, recheck eligibility under
+that lock and safely resume the backlog, so extra attempts cannot delete younger
+records. The deployed app currently has one worker.
+
+The triggering request waits for the bounded pass; PostgreSQL lock waits are
+limited to 200 milliseconds and individual statements to five seconds. If cleanup
+fails or the database is busy, it rolls back, logs only the exception class,
+and allows the normal request to continue. Another visit can retry after five
+minutes. Normal request database failures still use the app's existing error
+handling. Review Render application logs for `Request retention` results or
+warnings, including deleted counts, cutoff, invalid timestamps and backlog.
+
+Verify recovery coverage before rollout and check the merged web deploy. The
+standalone cleanup command remains available for a private read-only preview or
+an explicit bounded maintenance pass. Do not also enable a separate scheduled
+apply workflow. Code rollback or disabling cleanup stops future deletion; it
+does not restore already deleted records. Records can remain older than the
+cutoff during inactivity, failures or while a large backlog drains.
 
 Tests: `python -m unittest -v test_app test_boundary` covers retention on disposable
 SQLite along with existing app/deletion/solver-boundary regressions.
@@ -534,4 +529,6 @@ regressions inside a uniquely created local PostgreSQL database. Never point the
 test harness at Neon. `node test_frontend.cjs`, `node test_deletion_browser.cjs`
 and `node test_retention_browser.cjs` cover frontend state, existing manual
 deletion and background removal recovery (including 375px). The PR workflow also
-runs existing boundary/supervisor/permission browser and solver suites.
+runs `node test_request_retention_browser.cjs`, which verifies cleanup on the first
+real website visit at desktop and 375px sizes, plus existing
+boundary/supervisor/permission browser and solver suites.

@@ -22,8 +22,12 @@ from models import (
 import solver as solver_module
 import weekend_generator
 from boundary import boundary_context, consent_status
+from request_retention import RequestRetention
 
 app = Flask(__name__, static_folder="public", static_url_path="")
+app.logger.setLevel('INFO')
+app.config['REQUEST_RETENTION_ENABLED'] = os.environ.get('REQUEST_RETENTION_ENABLED', 'true') == 'true'
+request_retention = RequestRetention()
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
 if ADMIN_PASSWORD == "admin123":
@@ -69,6 +73,8 @@ def resolve_name(raw):
 def _open_db():
     if db.is_closed():
         db.connect(reuse_if_open=True)
+    if request.path.startswith('/api/') and app.config['REQUEST_RETENTION_ENABLED']:
+        request_retention.maybe_run(app.logger)
 
 
 @app.teardown_request

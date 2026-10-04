@@ -147,6 +147,7 @@ class AppTests(RetentionTests, FolderDeletionTests, unittest.TestCase):
         self.assertEqual(response.json['maxHours'], 0)
 
     def setUp(self):
+        web.app.config['REQUEST_RETENTION_ENABLED'] = False
         db.close()
         self.path = TEST_DIR / (self._testMethodName + ".db")
         db.init(str(self.path))
