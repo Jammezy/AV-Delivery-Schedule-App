@@ -118,7 +118,7 @@ async function renderFolderOverview(reset = false) {
   updateSelectionCount();
   $("overviewArea").innerHTML = `<p>Hover or focus to preview. Click to pin; click again, outside, or press Escape to clear.</p>
     <div class="availability-viewer"><div class="viewer-list">${submitted.map(e => `<button class="secondary viewer-person" data-person="${e.id}" aria-pressed="false">${escapeHtml(e.name)} — ${Object.keys(validAvailability(data.availability[e.name])).length} hrs</button>`).join("")}</div>
-    <div><p id="viewerCaption" role="status"></p><p id="viewerComment"></p><div id="viewerConsent" role="status"></div><div id="viewerPermissionControls"></div><div class="scroll-x" id="viewerGrid"></div></div></div>
+    <div><p id="viewerCaption" role="status"></p><p id="viewerComment"></p><div id="viewerConsent" role="status"></div><div class="scroll-x" id="viewerGrid"></div><div id="viewerPermissionControls"></div></div></div>
     <p>Missing submissions: ${data.missing.length ? data.missing.map(escapeHtml).join(", ") : "None"}.</p>`;
   $("overviewArea").querySelectorAll("[data-person]").forEach(btn => {
     const id = Number(btn.dataset.person);
