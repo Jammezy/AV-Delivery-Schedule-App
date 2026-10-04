@@ -189,7 +189,7 @@ def submission_json(row, cfg=None):
 def permission_version(row):
     # Include the availability and agreement as well as stable record identities:
     # concurrent employee/admin edits and reused folder IDs cannot overwrite a draft.
-    value = [row.employee_id, row.folder_id, row.folder.created_at.isoformat(),
+    value = [row.employee_id, row.folder_id, row.folder.created_at.isoformat(), row.save_version,
              row.data_json, row.comment, row.submitted_at.isoformat(), recorded_consent(row)]
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
@@ -218,8 +218,9 @@ def update_boundary_permissions():
         row.allow_extra_openings = data['allowExtraOpenings']
         row.allow_extra_closings = data['allowExtraClosings']
         row.consent_context = boundary_context(cfg)['token']
+        row.save_version += 1
         row.save(only=[FolderAvailability.allow_extra_openings, FolderAvailability.allow_extra_closings,
-                       FolderAvailability.consent_context])
+                       FolderAvailability.consent_context, FolderAvailability.save_version])
     return jsonify(submission=submission_json(row, cfg))
 
 
@@ -535,10 +536,15 @@ def admin_update_availability():
         if any(k not in valid or (type(v) not in (int, bool) or v not in (0, 1, 2)) for k, v in availability.items()):
             abort(400, "Invalid availability time slot.")
 
-        row, _ = FolderAvailability.get_or_create(employee=employee, folder=folder)
+        row = FolderAvailability.get_or_none((FolderAvailability.employee == employee) & (FolderAvailability.folder == folder))
+        if row is None:
+            abort(404, 'Current availability no longer exists. Reload current availability.')
+        if data.get('permissionVersion') != permission_version(row):
+            abort(409, 'Current availability changed after this form was loaded. Reload current availability before saving.')
         row.data_json = json.dumps(availability)
         row.comment = comment
         row.submitted_at = datetime.datetime.utcnow()
+        row.save_version += 1
         row.save()
 
     return jsonify(ok=True)

@@ -26,6 +26,7 @@ ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 PUBLIC_FIELDS = ('days', 'availabilityDays', 'hourStart', 'hourEnd', 'dayCloseHours',
                  'minShiftLength', 'maxMorningShifts', 'maxEveningShifts',
                  'maxMorningPlusEvening', 'allowPreferredBoundaryExtras')
+EDIT_DAYS = ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun')
 
 
 def now():
@@ -117,11 +118,11 @@ def session_record(require_csrf=False):
     return session, token
 
 
-def validate_payload(data, cfg):
+def validate_payload(data, cfg, editing=False):
     if not isinstance(data, dict):
         abort(400, 'A JSON object is required.')
     allowed = {'name', 'availability', 'comment', 'folderId', 'revision', 'allowExtraOpenings',
-               'allowExtraClosings', 'consentContext', 'requestId'}
+               'allowExtraClosings', 'consentContext', 'requestId', 'permissionVersion'}
     if set(data) - allowed:
         abort(400, 'Unexpected submission fields.')
     name, comment, av = data.get('name'), data.get('comment', ''), data.get('availability')
@@ -131,7 +132,8 @@ def validate_payload(data, cfg):
         abort(400, 'Comments must be shorter than 100 characters.')
     if not isinstance(av, dict):
         abort(400, 'Availability must be an object.')
-    valid = {f'{d}_{h:02d}' for d in cfg['availabilityDays'] for h in range(cfg['hourStart'], cfg['hourEnd'] + 1)}
+    valid = ({f'{d}_{h:02d}' for d in EDIT_DAYS for h in range(7, 17 if d == 'Sun' else 22)}
+             if editing else {f'{d}_{h:02d}' for d in cfg['availabilityDays'] for h in range(cfg['hourStart'], cfg['hourEnd'] + 1)})
     if any(k not in valid or type(v) not in (int, bool) or v not in (0, 1, 2) for k, v in av.items()):
         abort(400, 'Invalid availability time slot. Refresh the form and try again.')
     fields = ('allowExtraOpenings', 'allowExtraClosings')
@@ -147,7 +149,16 @@ def validate_payload(data, cfg):
     return re.sub(r'\s+', ' ', name).strip(), comment, av, explicit
 
 
-def public_context(session=None, token=None):
+def linked_current(grant):
+    employee = Employee.get_or_none(Employee.id == grant.employee_id) if grant.employee_id else None
+    current = FolderAvailability.get_or_none((FolderAvailability.employee == grant.employee_id) &
+        (FolderAvailability.folder == grant.folder_id)) if employee and grant.folder_id else None
+    if current is None or grant.folder_id != grant.submission.folder_id:
+        abort(404, 'The linked employee or current availability no longer exists in this folder. Ask your supervisor for help.')
+    return current
+
+
+def public_context(session=None, token=None, permission_version=None):
     state = SubmissionState.get_by_id(1)
     cfg = get_config()
     result = dict(folder={'id': state.active_folder_id, 'name': state.active_folder.name} if state.active_folder_id else None,
@@ -160,10 +171,15 @@ def public_context(session=None, token=None):
         result['csrf'] = csrf(token)
         result['submitted'] = bool(session.submitted_request_key)
         if session.edit_grant_id:
-            row = session.edit_grant.submission
+            row = linked_current(session.edit_grant)
+            # The administrator edits the full collection window independently of
+            # weekday scheduling hours. Expose that same window when correcting it.
+            result['config'].update(availabilityDays=list(EDIT_DAYS), hourStart=7, hourEnd=21,
+                dayCloseHours={d: 17 if d == 'Sun' else 22 for d in EDIT_DAYS})
             recorded = dict(allowExtraOpenings=row.allow_extra_openings, allowExtraClosings=row.allow_extra_closings,
                             consentContext=row.consent_context)
-            result['edit'] = dict(name=row.name, availability=json.loads(row.data_json), comment=row.comment,
+            result['edit'] = dict(name=session.edit_grant.submission.name, employeeId=row.employee_id,
+                                 permissionVersion=permission_version(row), availability=json.loads(row.data_json), comment=row.comment,
                                  consent=consent_status(json.loads(row.data_json), recorded, cfg))
     return result
 
@@ -218,6 +234,7 @@ def register(app, require_admin, permission_version, body, folder_or_404):
                 if not grant or grant.revoked or grant.redeemed or grant.expires_at <= now():
                     abort(401, 'Edit link expired, already used, or revoked. Ask your supervisor for another link.')
                 code = grant.submission.code
+                linked_current(grant)
                 grant.redeemed = True
                 grant.save()
             else:
@@ -234,7 +251,7 @@ def register(app, require_admin, permission_version, body, folder_or_404):
             state = SubmissionState.get_by_id(1)
             session = SubmissionSession.create(code=code, token_hash=digest(secret), state_revision=state.revision,
                 edit_grant=grant, expires_at=now() + dt.timedelta(hours=2))
-            result = public_context(session, secret)
+            result = public_context(session, secret, permission_version)
         response = jsonify(result)
         response.set_cookie(COOKIE, secret, httponly=True, secure=bool(os.environ.get('RENDER')) or request.is_secure,
                             samesite='Strict', max_age=7200, path='/api/')
@@ -244,7 +261,7 @@ def register(app, require_admin, permission_version, body, folder_or_404):
     def context():
         with write_transaction():
             session, token = session_record()
-            return jsonify(public_context(session, token))
+            return jsonify(public_context(session, token, permission_version))
 
     @app.post('/api/availability')
     def submit():
@@ -257,7 +274,7 @@ def register(app, require_admin, permission_version, body, folder_or_404):
             session, _ = session_record(require_csrf=True)
             code = session.code
             cfg = get_config()
-            name, comment, av, explicit = validate_payload(data, cfg)
+            name, comment, av, explicit = validate_payload(data, cfg, editing=bool(session.edit_grant_id))
             if type(data.get('folderId')) is not int or type(data.get('revision')) is not int or data['folderId'] != code.folder_id or data['revision'] != session.state_revision:
                 abort(409, 'The collection changed. Refresh and confirm the destination.')
             if session.edit_grant_id:
@@ -271,6 +288,9 @@ def register(app, require_admin, permission_version, body, folder_or_404):
                 if previous.payload_hash != payload_hash:
                     abort(409, 'This request ID was already used. Start a new submission.')
                 return jsonify(receipt(previous))
+            current = linked_current(session.edit_grant) if session.edit_grant_id else None
+            if current is not None and data.get('permissionVersion') != permission_version(current):
+                abort(409, 'Current availability changed after this form was loaded. Reload current availability before saving.')
             check_code(code)
             if session.submitted_request_key:
                 abort(409, 'This form has already been submitted. Enter a code again for another submission.')
@@ -282,7 +302,20 @@ def register(app, require_admin, permission_version, body, folder_or_404):
                 consent_context=boundary_context(cfg)['token'] if explicit else None,
                 parent_id=session.edit_grant.submission_id if session.edit_grant_id else None,
                 request_key=key, payload_hash=payload_hash)
-            save_to_folder(row, permission_version)
+            if current is None:
+                save_to_folder(row, permission_version)
+            else:
+                for field in ('data_json', 'comment', 'allow_extra_openings', 'allow_extra_closings', 'consent_context', 'submitted_at'):
+                    setattr(current, field, getattr(row, field))
+                current.save_version += 1
+                current.save()
+                IntakeSubmission.update(status='Superseded', review_version=IntakeSubmission.review_version+1).where(
+                    (IntakeSubmission.folder == current.folder_id) & (IntakeSubmission.employee == current.employee_id) &
+                    (IntakeSubmission.status == 'Accepted')).execute()
+                row.employee = current.employee_id
+                row.status = 'Accepted'
+                row.accepted_fingerprint = permission_version(current)
+                row.save(only=[IntakeSubmission.employee, IntakeSubmission.status, IntakeSubmission.accepted_fingerprint])
             code.received += 1
             code.save(only=[CollectionCode.received])
             settings.received += 1
@@ -398,7 +431,7 @@ def register(app, require_admin, permission_version, body, folder_or_404):
             rows = []
             for row in IntakeSubmission.select().where(IntakeSubmission.folder == fid).order_by(IntakeSubmission.id.desc()):
                 candidate = next((e for e in roster if e.name.casefold() == row.name.casefold()), None)
-                accepted_id = row.employee_id or (candidate.id if candidate else None)
+                accepted_id = row.employee_id
                 accepted = FolderAvailability.get_or_none((FolderAvailability.employee == accepted_id) & (FolderAvailability.folder == fid)) if accepted_id else None
                 recorded = dict(allowExtraOpenings=row.allow_extra_openings, allowExtraClosings=row.allow_extra_closings, consentContext=row.consent_context)
                 rows.append(dict(id=row.id, name=row.name, availability=json.loads(row.data_json), comment=row.comment,
@@ -406,6 +439,8 @@ def register(app, require_admin, permission_version, body, folder_or_404):
                     candidateEmployeeId=candidate.id if candidate else None, employeeId=row.employee_id,
                     acceptedVersion=permission_version(accepted) if accepted else None, parentId=row.parent_id,
                     codeId=row.code_id, codeLabel=row.code.label,
+                    canCreateEditLink=bool(accepted and code_status(row.code) == 'Active'),
+                    canRevokeEditLinks=bool(accepted),
                     consent=consent_status(json.loads(row.data_json), recorded, cfg)))
             return jsonify(submissions=rows, employees=[dict(id=e.id, name=e.name) for e in roster],
                 acceptedVersions={str(r.employee_id): permission_version(r) for r in FolderAvailability.select().where(FolderAvailability.folder == fid)})
@@ -447,6 +482,7 @@ def register(app, require_admin, permission_version, body, folder_or_404):
                 accepted = FolderAvailability.create(employee=employee, folder=row.folder)
             for field in ('data_json','comment','allow_extra_openings','allow_extra_closings','consent_context','submitted_at'):
                 setattr(accepted,field,getattr(row,field))
+            accepted.save_version += 1
             accepted.save()
             row.employee, row.status, row.review_version = employee, 'Accepted', row.review_version+1
             row.accepted_fingerprint = permission_version(accepted)
@@ -461,16 +497,24 @@ def register(app, require_admin, permission_version, body, folder_or_404):
             if not row:
                 abort(404, 'Submission not found.')
             check_code(row.code)
-            EditGrant.update(revoked=True).where(EditGrant.submission == row).execute()
+            if not row.employee_id or not FolderAvailability.get_or_none(
+                    (FolderAvailability.employee == row.employee_id) & (FolderAvailability.folder == row.folder_id)):
+                abort(404, 'The linked employee or current availability no longer exists in this folder.')
+            EditGrant.update(revoked=True).where((EditGrant.employee == row.employee_id) & (EditGrant.folder == row.folder_id)).execute()
             token = secrets.token_urlsafe(32)
-            grant = EditGrant.create(submission=row,token_hash=digest(token),expires_at=now()+dt.timedelta(hours=24))
+            grant = EditGrant.create(submission=row, employee=row.employee_id, folder=row.folder_id,
+                token_hash=digest(token),expires_at=now()+dt.timedelta(hours=24))
             return jsonify(token=token,grantId=grant.id,expiresAt=grant.expires_at.isoformat()+'Z')
 
     @app.delete('/api/admin/intake/<int:entry_id>/edit-links')
     @require_admin
     def revoke_entry_edits(entry_id):
         with write_transaction():
-            EditGrant.update(revoked=True).where(EditGrant.submission == entry_id).execute()
+            row = IntakeSubmission.get_or_none(IntakeSubmission.id == entry_id)
+            if not row:
+                abort(404, 'Submission not found.')
+            EditGrant.update(revoked=True).where((EditGrant.submission == entry_id) |
+                ((EditGrant.employee == row.employee_id) & (EditGrant.folder == row.folder_id))).execute()
         return jsonify(ok=True)
 
     @app.delete('/api/admin/edit-links/<int:grant_id>')

@@ -51,7 +51,10 @@ class CollectionTests(unittest.TestCase):
    from collection_codes import digest
    current_session=SubmissionSession.get_or_none(SubmissionSession.token_hash==digest(cookie.value)) if cookie else None
    revision=current_session.state_revision if current_session else self.ctx['revision']
-  data=dict(name='Alex',folderId=self.fid,revision=revision,availability={'Mon_07':2},comment='Synthetic',requestId=uuid.uuid4().hex);data.update(kw)
+  edit_version=(client.get('/api/collection/context').json or {}).get('edit',{}).get('permissionVersion') if current_session and current_session.edit_grant_id else None
+  data=dict(name='Alex',folderId=self.fid,revision=revision,availability={'Mon_07':2},comment='Synthetic',requestId=uuid.uuid4().hex);
+  if edit_version: data['permissionVersion']=edit_version
+  data.update(kw)
   return (c or self.client).post('/api/availability',headers=h,json=data)
  def intake(self):return self.client.get('/api/admin/intake?folderId='+str(self.fid),headers=self.admin).json
  def accept(self,row,eid,version=None):return self.client.post(f'/api/admin/intake/{row["id"]}/review',headers=self.admin,json=dict(action='accept',employeeId=eid,reviewVersion=row['reviewVersion'],acceptedVersion=version))
@@ -85,6 +88,8 @@ class CollectionTests(unittest.TestCase):
   self.assertEqual(self.submit({'X-Submission-CSRF':second_context['csrf']},folderId=folder['id'],revision=second_context['revision']).status_code,200)
   with db.connection_context():
    self.assertEqual([(r.folder_id,r.code_id) for r in IntakeSubmission.select().order_by(IntakeSubmission.id)],[(self.fid,one['id']),(self.fid,one['id']),(folder['id'],two['id'])])
+ # Isolate quota accounting from deliberately colliding fixed rate-limit buckets.
+ @patch('collection_codes.rate_limit', lambda *args, **kwargs: None)
  def test_default_folder_cap_across_multiple_codes(self):
   one=self.code();two=self.code();self.add_responses(one,60);self.add_responses(two,10)
   h=self.unlock(one)
@@ -233,12 +238,106 @@ class CollectionTests(unittest.TestCase):
   link=self.client.post(f'/api/admin/intake/{row["id"]}/edit-links',headers=self.admin,json={}).json;c=FlaskClient(web.app)
   opened=c.post('/api/collection/unlock',json={'editToken':link['token']});self.assertEqual(opened.status_code,200);self.assertEqual(opened.json['edit']['comment'],'Original');eh={'X-Submission-CSRF':opened.json['csrf']}
   self.assertEqual(self.submit(eh,c,name='Someone else').status_code,400);self.assertEqual(self.submit(eh,c,comment='Correction').status_code,200)
-  with db.connection_context():self.assertEqual(IntakeSubmission.select().count(),2);self.assertEqual(CollectionCode.get_by_id(code['id']).received,2);self.assertEqual(IntakeSubmission.get_by_id(row['id']).comment,'Original');self.assertEqual(FolderAvailability.get(FolderAvailability.employee==row['employeeId']).comment,'Original');self.assertEqual(FolderAvailability.select().count(),2)
+  with db.connection_context():self.assertEqual(IntakeSubmission.select().count(),2);self.assertEqual(CollectionCode.get_by_id(code['id']).received,2);self.assertEqual(IntakeSubmission.get_by_id(row['id']).comment,'Original');self.assertEqual(FolderAvailability.get(FolderAvailability.employee==row['employeeId']).comment,'Correction');self.assertEqual(FolderAvailability.select().count(),1)
   self.assertEqual(c.post('/api/collection/unlock',json={'editToken':link['token']}).status_code,401)
   self.client.delete(f'/api/admin/edit-links/{link["grantId"]}',headers=self.admin);self.assertEqual(self.submit(eh,c).status_code,401)
   link=self.client.post(f'/api/admin/intake/{row["id"]}/edit-links',headers=self.admin,json={}).json
   with db.connection_context():EditGrant.update(expires_at=dt.datetime.utcnow()-dt.timedelta(seconds=1)).execute()
   self.assertEqual(c.post('/api/collection/unlock',json={'editToken':link['token']}).status_code,401)
+ def admin_edit(self, eid, comment, version=None, availability=None):
+  if version is None:
+   version=next(r['permissionVersion'] for r in self.client.get(f'/api/availability?folderId={self.fid}',headers=self.admin).json['submissions'] if r['employeeId']==eid)
+  return self.client.put('/api/admin/availability',headers=self.admin,json=dict(employeeId=eid,folderId=self.fid,permissionVersion=version,availability=availability or {'Tue_08':1},comment=comment))
+ def link(self, row):
+  r=self.client.post(f'/api/admin/intake/{row["id"]}/edit-links',headers=self.admin,json={});self.assertEqual(r.status_code,200,r.json);return r.json
+ def open_link(self, row):
+  c=FlaskClient(web.app);r=c.post('/api/collection/unlock',json={'editToken':self.link(row)['token']});self.assertEqual(r.status_code,200,r.json)
+  return c,r.json,{'X-Submission-CSRF':r.json['csrf']}
+ def test_edit_link_live_state_same_employee_history_and_solver_input(self):
+  code=self.code();self.submit(self.unlock(code),comment='Original');row=self.intake()['submissions'][0];eid=row['employeeId']
+  link=self.link(row)
+  self.assertEqual(self.admin_edit(eid,'Administrator saved').status_code,200)
+  c=FlaskClient(web.app);opened=c.post('/api/collection/unlock',json={'editToken':link['token']}).json
+  self.assertEqual(opened['edit']['comment'],'Administrator saved');self.assertEqual(opened['edit']['availability'],{'Tue_08':1})
+  h={'X-Submission-CSRF':opened['csrf']}
+  self.assertEqual(self.submit(h,c,permissionVersion=opened['edit']['permissionVersion'],comment='Employee correction',availability={'Wed_09':2}).status_code,200)
+  rows=self.intake()['submissions'];correction=rows[0]
+  self.assertEqual(correction['employeeId'],eid);self.assertEqual(correction['parentId'],row['id']);self.assertEqual(rows[1]['comment'],'Original')
+  with db.connection_context():
+   self.assertEqual(Employee.select().where(Employee.id==eid).count(),1);self.assertEqual(FolderAvailability.select().count(),1)
+   _,_,availability,_=web._load_inputs(self.fid,[eid]);self.assertEqual(availability['Alex'],{'Wed_09':2})
+  c,context,h=self.open_link(correction);self.assertEqual(context['edit']['comment'],'Employee correction')
+  self.assertEqual(self.admin_edit(eid,'Later admin').status_code,200)
+  self.assertEqual(c.get('/api/collection/context').json['edit']['comment'],'Later admin')
+  stale=self.submit(h,c,permissionVersion=context['edit']['permissionVersion'],comment='Stale employee');self.assertEqual(stale.status_code,409);self.assertIn('Reload current availability',stale.json['error'])
+  fresh=c.get('/api/collection/context').json
+  self.assertEqual(self.submit(h,c,permissionVersion=fresh['edit']['permissionVersion'],comment='Latest employee').status_code,200)
+  self.assertEqual(self.admin_edit(eid,'Stale admin',version=fresh['edit']['permissionVersion']).status_code,409)
+  with db.connection_context():self.assertEqual(FolderAvailability.get(FolderAvailability.employee==eid).comment,'Latest employee');self.assertEqual(IntakeSubmission.select().count(),3)
+ def test_edit_link_missing_records_does_not_recreate_or_match_name(self):
+  self.submit(self.unlock(self.code()));row=self.intake()['submissions'][0];link=self.link(row)
+  with db.connection_context():FolderAvailability.delete().where(FolderAvailability.employee==row['employeeId']).execute()
+  c=FlaskClient(web.app);r=c.post('/api/collection/unlock',json={'editToken':link['token']});self.assertEqual(r.status_code,404)
+  self.assertEqual(self.client.post(f'/api/admin/intake/{row["id"]}/edit-links',headers=self.admin,json={}).status_code,404)
+  self.assertFalse(self.intake()['submissions'][0]['canCreateEditLink'])
+  self.assertEqual(self.admin_edit(row['employeeId'],'Do not recreate',version='old').status_code,404)
+  with db.connection_context():self.assertEqual(FolderAvailability.select().count(),0)
+ def test_link_exposes_full_saved_collection_under_narrow_scheduling_hours(self):
+  self.submit(self.unlock(self.code()));row=self.intake()['submissions'][0]
+  narrowed=self.client.put('/api/config',headers=self.admin,json=dict(hourStart=9,hourEnd=16,lateHourStart=17,dayCloseHours={'Fri':13}))
+  self.assertEqual(narrowed.status_code,200,narrowed.json)
+  self.assertEqual(self.admin_edit(row['employeeId'],'Full saved grid',availability={'Mon_07':2,'Fri_21':1,'Sun_16':1}).status_code,200)
+  c,context,h=self.open_link(row)
+  self.assertEqual((context['config']['hourStart'],context['config']['hourEnd']),(7,21));self.assertEqual(context['config']['dayCloseHours']['Fri'],22)
+  self.assertEqual(self.submit(h,c,permissionVersion=context['edit']['permissionVersion'],availability=context['edit']['availability']).status_code,200)
+ def test_open_employee_form_conflicts_with_permission_save_and_deleted_employee(self):
+  self.submit(self.unlock(self.code()));row=self.intake()['submissions'][0];c,context,h=self.open_link(row)
+  saved=self.client.put('/api/admin/boundary-permissions',headers=self.admin,json=dict(employeeId=row['employeeId'],folderId=self.fid,permissionVersion=context['edit']['permissionVersion'],consentContext=context['boundaryContext']['token'],allowExtraOpenings=True,allowExtraClosings=False))
+  self.assertEqual(saved.status_code,200)
+  self.assertEqual(self.submit(h,c,permissionVersion=context['edit']['permissionVersion']).status_code,409)
+  fresh=c.get('/api/collection/context').json;self.assertTrue(fresh['edit']['consent']['allowExtraOpenings'])
+  self.client.put('/api/config',headers=self.admin,json={'maxMorningShifts':4})
+  self.assertTrue(c.get('/api/collection/context').json['edit']['consent']['reconfirmationNeeded'])
+  with db.connection_context():
+   FolderAvailability.delete().where(FolderAvailability.employee==row['employeeId']).execute();Employee.delete().where(Employee.id==row['employeeId']).execute()
+  self.assertEqual(c.get('/api/collection/context').status_code,404)
+ def test_history_folder_isolation_and_separate_same_names(self):
+  code=self.code();h=self.unlock(code)
+  for n in range(25):self.assertEqual(self.submit(h,name='Repeat' if n<2 else f'Person {n}').status_code,200)
+  rows=self.intake()['submissions'];self.assertEqual(len(rows),25);self.assertNotEqual(rows[-1]['employeeId'],rows[-2]['employeeId']);self.assertTrue(all(r['canCreateEditLink'] for r in rows))
+  folder=self.client.post('/api/folders',headers=self.admin,json={'name':'Empty','activate':False}).json
+  self.assertEqual(self.client.get(f'/api/admin/intake?folderId={folder["id"]}',headers=self.admin).json['submissions'],[])
+ def test_simultaneous_admin_employee_saves_commit_only_one(self):
+  self.submit(self.unlock(self.code()));row=self.intake()['submissions'][0];c,context,h=self.open_link(row)
+  version=context['edit']['permissionVersion'];import threading
+  barrier=threading.Barrier(2)
+  def admin_save():
+   client=FlaskClient(web.app);barrier.wait()
+   r=client.put('/api/admin/availability',headers=self.admin,json=dict(employeeId=row['employeeId'],folderId=self.fid,permissionVersion=version,availability={'Tue_08':1},comment='Admin winner'))
+   return r.status_code,'Admin winner'
+  def employee_save():
+   barrier.wait();r=self.submit(h,c,permissionVersion=version,comment='Employee winner');return r.status_code,'Employee winner'
+  with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+   one=pool.submit(admin_save);two=pool.submit(employee_save);results=[one.result(),two.result()]
+  self.assertEqual(sorted(r[0] for r in results),[200,409])
+  with db.connection_context():
+   current=FolderAvailability.get(FolderAvailability.employee==row['employeeId']);self.assertEqual(current.comment,next(comment for status,comment in results if status==200))
+   self.assertEqual(IntakeSubmission.select().count(),2 if current.comment=='Employee winner' else 1)
+   self.assertEqual(CollectionCode.get().received,IntakeSubmission.select().count())
+ def test_additive_migration_preserves_old_links_sessions_and_history(self):
+  if test_pg:self.skipTest('SQLite legacy schema fixture')
+  self.submit(self.unlock(self.code()));row=self.intake()['submissions'][0]
+  with db.connection_context(),write_transaction():
+   SubmissionSession.drop_table();EditGrant.drop_table()
+   db.execute_sql('ALTER TABLE folderavailability DROP COLUMN save_version')
+   db.execute_sql('CREATE TABLE editgrant (id INTEGER PRIMARY KEY, submission_id INTEGER NOT NULL REFERENCES intakesubmission(id) ON DELETE CASCADE, token_hash VARCHAR(255) NOT NULL UNIQUE, expires_at DATETIME NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, redeemed INTEGER NOT NULL DEFAULT 0)')
+   db.execute_sql('INSERT INTO editgrant (id,submission_id,token_hash,expires_at) VALUES (1,?,?,?)',(row['id'],'legacy-token',dt.datetime.utcnow()+dt.timedelta(hours=1)))
+   SubmissionSession.create_table();SubmissionSession.create(code=row['codeId'],token_hash='legacy-session',state_revision=0,expires_at=dt.datetime.utcnow()+dt.timedelta(hours=1),edit_grant=1)
+  init_db();init_db()
+  with db.connection_context():
+   grant=EditGrant.get_by_id(1);self.assertEqual((grant.employee_id,grant.folder_id),(row['employeeId'],self.fid));self.assertEqual(SubmissionSession.get().edit_grant_id,1)
+   self.assertEqual(IntakeSubmission.get_by_id(row['id']).comment,'Synthetic');self.assertEqual(FolderAvailability.get().save_version,0)
+   FolderAvailability.delete().execute();Employee.delete().where(Employee.id==row['employeeId']).execute();self.assertIsNone(EditGrant.get_by_id(1).employee_id)
  def test_close_reopen_and_expiry(self):
   code=self.code();h=self.unlock(code);self.client.patch(f'/api/folders/{self.fid}',headers=self.admin,json={'archived':True});self.assertEqual(self.submit(h).status_code,409)
   self.client.patch(f'/api/folders/{self.fid}',headers=self.admin,json={'archived':False});self.assertEqual(self.submit(h).status_code,200)

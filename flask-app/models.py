@@ -85,6 +85,7 @@ class FolderAvailability(BaseModel):
     allow_extra_closings = BooleanField(default=False)
     consent_context = TextField(null=True)
     submitted_at = DateTimeField(default=datetime.datetime.utcnow)
+    save_version = IntegerField(default=0)
 
     class Meta:
         indexes = ((('employee', 'folder'), True),)
@@ -151,6 +152,9 @@ class IntakeSubmission(BaseModel):
 
 class EditGrant(BaseModel):
     submission = ForeignKeyField(IntakeSubmission, on_delete="CASCADE")
+    # Create the composite index after legacy tables gain these columns.
+    employee = ForeignKeyField(Employee, null=True, on_delete="SET NULL", index=False)
+    folder = ForeignKeyField(Folder, null=True, on_delete="CASCADE", index=False)
     token_hash = CharField(unique=True)
     expires_at = DateTimeField()
     revoked = BooleanField(default=False)
@@ -291,6 +295,20 @@ def init_db():
         # Additive, serialized, transactional migration; preserve every existing row.
         from playhouse.migrate import SqliteMigrator, PostgresqlMigrator, migrate
         migrator = PostgresqlMigrator(db) if isinstance(db, PostgresqlDatabase) else SqliteMigrator(db)
+        if 'save_version' not in {c.name for c in db.get_columns('folderavailability')}:
+            db.execute_sql('ALTER TABLE folderavailability ADD COLUMN save_version INTEGER NOT NULL DEFAULT 0')
+        grant_columns = {c.name for c in db.get_columns('editgrant')}
+        for column in ('employee_id', 'folder_id'):
+            if column not in grant_columns:
+                target, action = ('employee', 'SET NULL') if column == 'employee_id' else ('folder', 'CASCADE')
+                db.execute_sql(f'ALTER TABLE editgrant ADD COLUMN {column} INTEGER NULL REFERENCES {target}(id) ON DELETE {action}')
+        if 'employee_id' not in grant_columns:
+            # Backfill once from saved IDs, never infer identity from a name.
+            for grant in EditGrant.select():
+                grant.employee = grant.submission.employee_id
+                grant.folder = grant.submission.folder_id
+                grant.save(only=[EditGrant.employee, EditGrant.folder])
+        db.execute_sql('CREATE INDEX IF NOT EXISTS editgrant_employee_folder ON editgrant (employee_id, folder_id)')
         if 'response_limit' not in {c.name for c in db.get_columns('collectioncode')}:
             # A constant SQL default backfills existing rows without rebuilding the
             # referenced code table (SQLite table rebuilds would break its children).

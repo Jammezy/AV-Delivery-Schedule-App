@@ -52,7 +52,7 @@ const server=spawn(python,['app.py'],{cwd:__dirname,env,stdio:'ignore'});
  assert.equal(await employee.locator('#submitBtn').isDisabled(),true);
  await admin.locator('#refreshCodesBtn').click();await admin.waitForFunction(()=>CODE_ROWS.find(c=>c.id===Number(document.querySelector('[data-copycode]').dataset.copycode)) && CODE_ROWS.some(c=>c.received===1));
  assert.match(await admin.locator('#codesTable').innerText(),/1 \/ 30/);
- await admin.locator('[data-tab="overview"]').click();await admin.waitForFunction(()=>INTAKE_ROWS.length===1);await admin.locator('details[data-intakerow]').click();assert.equal(await admin.locator('#intakeArea img').count(),0);
+ await admin.locator('[data-tab="overview"]').click();await admin.waitForFunction(()=>INTAKE_ROWS.length===1);await admin.locator('#viewHistoryBtn').click();await admin.locator('[data-intakerow]').click();assert.equal(await admin.locator('#historyDetails img').count(),0);await admin.locator('#closeHistoryBtn').click();
  // A valid code immediately adds the employee and saves their availability.
  assert.equal(await admin.evaluate(()=>INTAKE_ROWS[0].status),'Accepted');
  assert.ok(await admin.evaluate(()=>INTAKE_ROWS[0].employeeId));

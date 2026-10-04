@@ -109,6 +109,7 @@ function escapeHtml(s) {
 
 // ---------------- grid ----------------
 function renderGrid() {
+  if (!CONFIG) return;
   const grid = $("grid");
   grid.style.setProperty("--cols", CONFIG.availabilityDays.length);
   const parts = ['<div class="wg-corner"></div>'];
@@ -250,6 +251,7 @@ function showMsg(text, type) {
 }
 
 // ---------------- data ----------------
+let EDIT_VERSION = null, EDIT_CONFLICT = false;
 let CSRF = null, REQUEST_ID = null, LAST_PAYLOAD = null, SAVED = false;
 
 function updateCollectionDetails() {
@@ -259,6 +261,7 @@ function updateCollectionDetails() {
 }
 
 function useContext(next) {
+  EDIT_VERSION = next.edit?.permissionVersion || null; EDIT_CONFLICT = false;
   CONTEXT = next; CONFIG = next.config; CSRF = next.csrf || null;
   SAVED = !!next.submitted; $("newSheetBtn").hidden = !SAVED;
   $("nameInput").readOnly = !!next.edit;
@@ -297,11 +300,12 @@ async function submitAvailability() {
   SUBMITTING = true;
   $("submitBtn").disabled = true;
   try {
+    if (EDIT_CONFLICT) return showMsg("Current availability changed. Reload this page to load current availability before saving.", "err");
     if (!await refreshContext()) return showMsg($("codeGateMsg").textContent, "err");
     if (CONSENT_RECONFIRM) return showMsg("Settings changed. Reconfirm your consent choices before submitting.", "err");
     const payload = {name, availability:state, comment:$("commentInput").value, folderId:CONTEXT.folder.id, revision:CONTEXT.revision,
       allowExtraOpenings:$("allowExtraOpenings").checked, allowExtraClosings:$("allowExtraClosings").checked,
-      consentContext:CONTEXT.boundaryContext?.token};
+      consentContext:CONTEXT.boundaryContext?.token, ...(CONTEXT.edit ? {permissionVersion:EDIT_VERSION} : {})};
     const serialized = JSON.stringify(payload);
     if (serialized !== LAST_PAYLOAD) { REQUEST_ID = crypto.randomUUID(); LAST_PAYLOAD = serialized; }
     const res = await fetch("/api/availability", {
@@ -311,7 +315,9 @@ async function submitAvailability() {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      if (res.status === 409) {
+      if (res.status === 409 && data.error?.startsWith("Current availability changed")) {
+        EDIT_CONFLICT = true;
+      } else if (res.status === 409) {
         CONSENT_RECONFIRM = true;
         await refreshContext(); // Preserve the unsaved grid, comment and choices.
         updateConsent();
@@ -341,6 +347,11 @@ async function refreshContext() {
   if (CONTEXT?.unlocked && (next.folder?.id !== CONTEXT.folder?.id || next.revision !== CONTEXT.revision)) {
     CSRF = null; $("codeGate").hidden = false; updateCollectionDetails();
     $("codeGateMsg").textContent = "The scheduling folder changed. Enter a current code to confirm the destination. Your unsaved answers are still here.";
+    return false;
+  }
+  if (next.edit && EDIT_VERSION && next.edit.permissionVersion !== EDIT_VERSION && !next.submitted) {
+    EDIT_CONFLICT = true;
+    $('codeGateMsg').textContent = 'Current availability changed after this form was loaded. Reload this page to load current availability before saving.';
     return false;
   }
   if (CONTEXT && next.boundaryContext?.token !== CONTEXT.boundaryContext?.token) CONSENT_RECONFIRM = true;
