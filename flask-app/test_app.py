@@ -189,8 +189,8 @@ class AppTests(RetentionTests, FolderDeletionTests, unittest.TestCase):
         original = self.overview(fid)['submissions'][0]
         eid = original['employeeId']
         other = self.create_folder('Other folder', False)['id']
-        other_payload = dict(employeeId=eid, folderId=other, availability={'Tue_08': 1}, comment='Other')
-        self.assertEqual(self.client.put('/api/admin/availability', headers=self.headers, json=other_payload).status_code, 200)
+        with db.connection_context():
+            FolderAvailability.create(employee=eid, folder=other, data_json=json.dumps({'Tue_08':1}), comment='Other')
         other_before = self.overview(other)['submissions']
         self.seed_snapshots(fid)
         before_snapshots = self.client.get(f'/api/folders/{fid}/schedules', headers=self.headers).json
@@ -199,7 +199,7 @@ class AppTests(RetentionTests, FolderDeletionTests, unittest.TestCase):
             dayCloseHours={'Fri': 13})).status_code, 200)
         grid = {f'{d}_{h:02d}': 1 + h % 2 for d in ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
                 for h in range(7, 17 if d == 'Sun' else 22)}
-        payload = dict(employeeId=eid, folderId=fid, availability=grid, comment=original['comment'])
+        payload = dict(employeeId=eid, folderId=fid, permissionVersion=original['permissionVersion'], availability=grid, comment=original['comment'])
         self.assertEqual(self.client.put('/api/admin/availability', headers=self.headers, json=payload).status_code, 200)
         saved = self.overview(fid)['submissions'][0]
         self.assertEqual(saved['availability'], grid)
@@ -215,7 +215,7 @@ class AppTests(RetentionTests, FolderDeletionTests, unittest.TestCase):
         self.submit()
         fid = self.context()['folder']['id']
         original = self.overview(fid)['submissions'][0]
-        payload = dict(employeeId=original['employeeId'], folderId=fid,
+        payload = dict(employeeId=original['employeeId'], permissionVersion=original['permissionVersion'], folderId=fid,
                        availability=original['availability'], comment='Draft')
         self.assertEqual(self.client.put('/api/admin/availability', json=payload).status_code, 401)
         for key, level in [('Mon_06', 1), ('Mon_22', 1), ('Sat_22', 1), ('Sun_17', 1),
@@ -250,7 +250,7 @@ class AppTests(RetentionTests, FolderDeletionTests, unittest.TestCase):
         grid = {f'{d}_{h:02d}': 1 for d in ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
                 for h in range(7, 17 if d == 'Sun' else 22)}
         self.assertEqual(self.client.put('/api/admin/availability', headers=self.headers,
-            json=dict(employeeId=eid, folderId=fid, availability=grid, comment='Full window')).status_code, 200)
+            json=dict(employeeId=eid, folderId=fid, permissionVersion=self.overview(fid)['submissions'][0]['permissionVersion'], availability=grid, comment='Full window')).status_code, 200)
         result = self.client.post('/api/generate', headers=self.headers,
             json=dict(folderId=fid, employeeIds=[eid], seed=1)).json
         self.assertIn(result['status'], ['OPTIMAL', 'FEASIBLE'])

@@ -123,6 +123,7 @@ test('supervisor consent follows selected employee and rejects out of order refr
 
 test('lead settings stay independent, update live, explain ranges and save both switches', async () => {
   const {dom, run, doc} = await admin();
+  doc.getElementById('tab-settings').style.display='block';
   run('CONFIG = {...CONFIG, hourStart:7, hourEnd:21, lateHourStart:19, requireLeadDuringOpen:true, requireLeadDuringLate:false}; renderSettings()');
   const el = id => doc.getElementById(id);
   const day = el('cfg_requireLeadDuringOpen'), late = el('cfg_requireLeadDuringLate');
@@ -267,11 +268,13 @@ const config = {days:['Mon','Tue','Wed','Thu','Fri'], availabilityDays:['Mon','T
 const overview = {employees:[{id:1,name:'Alex'},{id:2,name:'Blair'},{id:3,name:'Casey'}],availability:{Alex:{Mon_07:2,Sat_07:1,Sun_08:1},Blair:{Mon_07:1,Invalid_99:1},Casey:{}},missing:['Missing'],comments:{Blair:'<img src=x onerror=alert(1)>'},submittedAt:{Alex:'2026-01-01T00:00:00Z',Blair:'2026-01-01T00:00:00Z'}};
 async function admin() {
   const dom = new JSDOM(fs.readFileSync(__dirname+'/public/admin.html','utf8'),{url:'http://localhost/admin.html',runScripts:'outside-only'});
+  const doc = dom.window.document;
   const ctx = dom.getInternalVMContext(), run = code => vm.runInContext(code,ctx);
   dom.window.fetch = async () => ({ok:true,status:200,json:async()=>structuredClone(overview)});
   for(const f of ['folders.js','collection-codes.js','admin.js']) run(fs.readFileSync(__dirname+'/public/js/'+f,'utf8'));
   run('renderIntake=async()=>{};renderCodes=async()=>{}');
   run(`TOKEN='test'; CONFIG=${JSON.stringify(config)}; FOLDER_ID=1;`);
+  doc.getElementById('appArea').style.display='block';doc.getElementById('tab-overview').style.display='block';
   await run('renderOverview(true)');
   return {dom,run,doc:dom.window.document};
 }

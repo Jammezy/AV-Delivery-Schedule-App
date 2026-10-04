@@ -380,7 +380,7 @@ class ConsentApiTests(unittest.TestCase):
         self.assertTrue(self.record()['consent']['allowExtraClosings'])
         original = self.record()
         fid = self.context()['folder']['id']
-        payload = dict(employeeId=original['employeeId'],folderId=fid,availability={},comment='admin')
+        payload = dict(employeeId=original['employeeId'],folderId=fid,permissionVersion=original['permissionVersion'],availability={},comment='admin')
         for key in ['allowExtraOpenings','allowExtraClosings','consentContext']:
             self.assertEqual(self.client.put('/api/admin/availability',headers=self.headers,json=dict(payload,**{key:True})).status_code,400)
         self.assertEqual(self.record(),original)

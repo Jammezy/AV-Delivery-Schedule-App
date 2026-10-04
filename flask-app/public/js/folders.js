@@ -161,6 +161,7 @@ function drawViewer() {
   }
   $("overviewArea").querySelectorAll("[data-person]").forEach(b => b.setAttribute("aria-pressed", String(Number(b.dataset.person) === PINNED)));
   renderPermissionControls(employee);
+  renderPinnedEditLinks(employee);
   $("viewerGrid").innerHTML = `<table class="data-table"><thead><tr><th>Time</th>${SUPERVISOR_AVAILABILITY_DAYS.map(d => `<th>${d}</th>`).join("")}</tr></thead><tbody>${supervisorAvailabilityHours().map(h => `<tr><th>${blockLabel(h)}</th>${SUPERVISOR_AVAILABILITY_DAYS.map(d => {
     if (supervisorAvailabilityClosed(d, h)) return '<td class="closed" aria-label="Outside collection hours">—</td>';
     const key = `${d}_${String(h).padStart(2,"0")}`;
@@ -230,12 +231,14 @@ function renderPermissionControls(employee) {
 // --- Edit Availability logic ---
 let editAvailState = {};
 let editAvailEmployee = null;
+let editAvailVersion = null;
 let editAvailPainting = false;
 let editAvailMode = 1;
 let editAvailPaintedThisDrag = new Set();
 
 function openEditAvailabilityModal(employee) {
   editAvailEmployee = employee;
+  editAvailVersion = OVERVIEW.submissions?.find(s => s.employeeId === employee.id)?.permissionVersion;
   editAvailState = Object.assign({}, validAvailability(OVERVIEW.availability[employee.name]));
   $("editAvailName").textContent = employee.name;
   $("editAvailComment").value = OVERVIEW.comments[employee.name] || "";
@@ -376,6 +379,7 @@ $("editAvailSaveBtn").onclick = async () => {
 
   const payload = {
     employeeId: editAvailEmployee.id,
+    permissionVersion: editAvailVersion,
     folderId: FOLDER_ID,
     availability: editAvailState,
     comment: $("editAvailComment").value
@@ -448,11 +452,11 @@ function setupFolders() {
   document.addEventListener("click", e => {
     // A save may redraw its button before the click bubbles to document. Use
     // the captured event path so that an internal click still preserves the pin.
-    if (!e.composedPath().some(node => ["overviewArea", "editAvailabilityModal", "editAvailabilityOverlay"].includes(node.id))) {
+    if (!e.composedPath().some(node => ["overviewArea", "responseHistoryDialog", "viewHistoryBtn", "editAvailabilityModal", "editAvailabilityOverlay"].includes(node.id))) {
       PINNED = PREVIEWED = null; drawViewer();
     }
   });
-  document.addEventListener("keydown", e => { if (e.key === "Escape") { PINNED = PREVIEWED = null; drawViewer(); } });
+  document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("responseHistoryDialog").open) { PINNED = PREVIEWED = null; drawViewer(); } });
 }
 
 
