@@ -195,7 +195,7 @@
 
     <section id="tab-codes" class="card" style="display:none;">
       <h2>Codes</h2>
-      <p class="hint">Each code allows 30 responses total. Create another code to allow another 30. Everyone uses the same employee-form link.</p>
+      <p class="hint">New codes start with 30 responses. Add additional responses to an individual code below, or create another code. Everyone uses the same employee-form link.</p>
       <p id="codesCollectionStatus" role="status"></p>
       <div class="row">
         <label>Label (optional)<input id="codeLabel" maxlength="100" placeholder="Team invitation"></label>
@@ -211,7 +211,7 @@
       <p id="codesMsg" role="status"></p>
       <div id="codesTable" class="scroll-x"></div>
       <details><summary>Collection response limit</summary>
-        <p>Independent of the 30-response limit per code. Raise this only if the period needs more responses.</p>
+        <p>This is a separate limit across all codes in this period. Adding responses to a code does not raise this limit.</p>
         <label>Maximum responses this period <input id="collectionResponseCap" type="number" min="30" max="10000" step="1"></label>
         <button id="saveCollectionCapBtn" class="secondary">Save limit</button>
       </details>

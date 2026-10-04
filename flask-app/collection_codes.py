@@ -20,7 +20,7 @@ from models import (db, write_transaction, Employee, Folder, FolderAvailability,
                     get_config, normalize_level)
 from boundary import boundary_context, consent_status
 
-QUOTA = 30
+MAX_CODE_RESPONSES = 10000
 COOKIE = 'availability_session'
 ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 PUBLIC_FIELDS = ('days', 'availabilityDays', 'hourStart', 'hourEnd', 'dayCloseHours',
@@ -84,7 +84,7 @@ def code_status(code):
         return 'Deleted'
     if code.revoked:
         return 'Revoked'
-    if code.received >= QUOTA:
+    if code.received >= code.response_limit:
         return 'Exhausted'
     if code.expires_at and code.expires_at <= now():
         return 'Expired'
@@ -263,7 +263,8 @@ def register(app, require_admin, permission_version, body, folder_or_404):
         return dict(id=code.id, code=plain, label=code.label, folderId=code.folder_id,
                     folderName=code.folder.name, createdAt=code.created_at.isoformat()+'Z',
                     expiresAt=code.expires_at.isoformat()+'Z' if code.expires_at else None,
-                    received=code.received, remaining=max(0, QUOTA-code.received), status=code_status(code))
+                    received=code.received, responseLimit=code.response_limit,
+                    remaining=max(0, code.response_limit-code.received), status=code_status(code))
 
     @app.get('/api/admin/codes')
     @require_admin
@@ -305,6 +306,24 @@ def register(app, require_admin, permission_version, body, folder_or_404):
             code = CollectionCode.create(folder=folder, verifier=verify_code(display),
                 encrypted_code=keys()[0].encrypt(display.encode()).decode(), label=label.strip(), expires_at=expiry)
             return jsonify(code_json(code)), 201
+
+    @app.post('/api/admin/codes/<int:code_id>/responses')
+    @require_admin
+    def add_code_responses(code_id):
+        additional = body().get('additionalResponses')
+        if type(additional) is not int or not 1 <= additional <= MAX_CODE_RESPONSES - 30:
+            abort(400, 'Additional responses must be a whole number from 1 to 9970.')
+        with write_transaction():
+            code = CollectionCode.get_or_none(CollectionCode.id == code_id)
+            if not code:
+                abort(404, 'Code not found.')
+            if code.revoked or code.deleted:
+                abort(409, 'Revoked or deleted codes cannot receive additional responses. Create a new code.')
+            if code.response_limit + additional > MAX_CODE_RESPONSES:
+                abort(400, 'A code can allow at most 10000 responses total.')
+            code.response_limit += additional
+            code.save(only=[CollectionCode.response_limit])
+            return jsonify(code_json(code))
 
     @app.route('/api/admin/codes/<int:code_id>', methods=['PATCH','DELETE'])
     @require_admin

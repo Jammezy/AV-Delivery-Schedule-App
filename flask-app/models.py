@@ -123,6 +123,7 @@ class CollectionCode(BaseModel):
     encrypted_code = TextField()
     label = CharField(default="")
     received = IntegerField(default=0)
+    response_limit = IntegerField(default=30)
     revoked = BooleanField(default=False)
     deleted = BooleanField(default=False)
     created_at = DateTimeField(default=datetime.datetime.utcnow)
@@ -289,6 +290,10 @@ def init_db():
         # Additive, serialized, transactional migration; preserve every existing row.
         from playhouse.migrate import SqliteMigrator, PostgresqlMigrator, migrate
         migrator = PostgresqlMigrator(db) if isinstance(db, PostgresqlDatabase) else SqliteMigrator(db)
+        if 'response_limit' not in {c.name for c in db.get_columns('collectioncode')}:
+            # A constant SQL default backfills existing rows without rebuilding the
+            # referenced code table (SQLite table rebuilds would break its children).
+            db.execute_sql('ALTER TABLE collectioncode ADD COLUMN response_limit INTEGER NOT NULL DEFAULT 30')
         columns = {c.name for c in db.get_columns('folderavailability')}
         for name, field in [('allow_extra_openings', BooleanField(default=False)),
                             ('allow_extra_closings', BooleanField(default=False)),

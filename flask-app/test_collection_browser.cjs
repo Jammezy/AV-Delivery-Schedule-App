@@ -41,15 +41,32 @@ const server=spawn(python,['app.py'],{cwd:__dirname,env,stdio:'ignore'});
  // Quota fill using the employee's legitimate session (synthetic requests only).
  const results=await employee.evaluate(async()=>{const statuses=[];for(let i=0;i<29;i++){const r=await fetch('/api/availability',{method:'POST',headers:{'Content-Type':'application/json','X-Submission-CSRF':CSRF},body:JSON.stringify({name:'Synthetic '+i,availability:{},comment:'',folderId:CONTEXT.folder.id,revision:CONTEXT.revision,requestId:crypto.randomUUID()})});statuses.push(r.status);}return statuses;});
  assert.equal(results.filter(s=>s===200).length,28);assert.equal(results.at(-1),409);
- await admin.locator('[data-tab="codes"]').click();await admin.locator('#refreshCodesBtn').click();await admin.waitForFunction(()=>CODE_ROWS.some(c=>c.status==='Exhausted'));
+ await admin.locator('[data-tab="codes"]').click();await admin.evaluate(()=>renderCodes());await admin.waitForFunction(()=>CODE_ROWS.some(c=>c.status==='Exhausted'));
+ // Add two responses to only the exhausted code, retain the default for other codes.
+ await admin.locator(`#extraResponses-${code.id}`).fill('2');
+ const addedResponse=admin.waitForResponse(r=>r.url().endsWith(`/api/admin/codes/${code.id}/responses`) && r.request().method()==='POST');
+ await admin.locator(`[data-addresponses="${code.id}"]`).click();const added=await addedResponse;assert.equal(added.status(),200,await added.text());assert.equal((await added.json()).responseLimit,32);
+ await admin.waitForFunction(()=>CODE_ROWS.some(c=>c.responseLimit===32 && c.remaining===2 && c.status==='Active'));
+ assert.equal(await admin.evaluate(id=>CODE_ROWS.find(c=>c.id===id).responseLimit,second.id),30);
+ await admin.reload();await admin.locator('#appArea').waitFor({state:'visible'});await admin.locator('[data-tab="codes"]').click();
+ await admin.waitForFunction(()=>CODE_ROWS.some(c=>c.responseLimit===32 && c.remaining===2));
+ assert.match(await admin.locator('#codesTable').innerText(),/30 \/ 32/);
+ await admin.locator(`[data-invitecode="${code.id}"]`).click();assert.match(await admin.evaluate(()=>navigator.clipboard.readText()),/32 responses total/);
+ const extra=await employee.evaluate(async()=>{const statuses=[];for(let i=0;i<3;i++){const r=await fetch('/api/availability',{method:'POST',headers:{'Content-Type':'application/json','X-Submission-CSRF':CSRF},body:JSON.stringify({name:'Additional '+i,availability:{},comment:'',folderId:CONTEXT.folder.id,revision:CONTEXT.revision,requestId:crypto.randomUUID()})});statuses.push(r.status);}return statuses;});
+ assert.deepEqual(extra,[200,200,409]);
+ await admin.locator('#refreshCodesBtn').click();await admin.waitForFunction(()=>CODE_ROWS.some(c=>c.responseLimit===32 && c.received===32 && c.remaining===0 && c.status==='Exhausted'));
  // Revocation stops an already unlocked session; deleting preserves received sheets.
  await employeeContext.clearCookies();await employee.goto('http://127.0.0.1:5102/');await employee.locator('#codeGate').waitFor({state:'visible'});await employee.locator('#collectionCode').fill(second.code);await employee.locator('#unlockBtn').click();await employee.locator('#availabilityForm').waitFor({state:'visible'});
  admin.once('dialog',d=>d.accept());await admin.locator(`[data-revokecode="${second.id}"]`).click();await admin.waitForFunction(()=>CODE_ROWS.some(c=>c.status==='Revoked'));
+ assert.equal(await admin.locator(`[data-addresponses="${second.id}"]`).count(),0);
  await employee.locator('#nameInput').fill('Blair');await employee.locator('#submitBtn').click();await employee.waitForFunction(()=>document.querySelector('#msgArea').textContent.includes('not accepting responses'));
  admin.once('dialog',d=>d.accept());await admin.locator(`[data-deletecode="${second.id}"]`).click();await admin.waitForFunction(()=>CODE_ROWS.length===1);await admin.locator('#showDeletedCodes').check();await admin.waitForFunction(()=>CODE_ROWS.some(c=>c.status==='Deleted'));
+ assert.equal(await admin.locator(`[data-addresponses="${second.id}"]`).count(),0);
+ await admin.setViewportSize({width:390,height:844});await admin.locator(`#extraResponses-${code.id}`).fill('1');await admin.locator(`[data-addresponses="${code.id}"]`).click();
+ await admin.waitForFunction(()=>CODE_ROWS.some(c=>c.responseLimit===33 && c.remaining===1));
  assert.equal(errors.length,0,errors.join('\n'));
  fs.mkdirSync(path.join(__dirname,'test-browser-output'),{recursive:true});await admin.screenshot({path:path.join(__dirname,'test-browser-output/codes-supervisor.png'),fullPage:true});
  await employee.screenshot({path:path.join(__dirname,'test-browser-output/codes-employee-mobile.png'),fullPage:true});
  await admin.locator('#logoutBtn').click();await admin.locator('#loginCard').waitFor({state:'visible'});assert.equal(await admin.locator('#codesTable').innerText(),'');
- console.log('PASS collection browser: create/copy codes, 30 cap, private form, immutable review, mobile input, revoke/delete, logout clearing.');
+ console.log('PASS collection browser: default 30, add per-code responses, persisted limits/invitations, exact quota, private form, immutable review, mobile controls, revoke/delete, logout clearing.');
 }finally{if(browser)await browser.close();server.kill();fs.rmSync(dir,{recursive:true,force:true});}})().catch(e=>{console.error(e);process.exitCode=1;});

@@ -20,15 +20,27 @@ async function renderCodes() {
   $('codesTable').innerHTML = CODE_ROWS.length ? `<table class="data-table"><thead><tr><th>Code / label</th><th>Collection</th><th>Created / expires</th><th>Received</th><th>Remaining</th><th>Status</th><th>Actions</th></tr></thead><tbody>${CODE_ROWS.map(c=>`<tr>
     <td><strong>${escapeHtml(c.code)}</strong><br>${escapeHtml(c.label)}</td><td>${escapeHtml(c.folderName)}</td>
     <td>${escapeHtml(new Date(c.createdAt).toLocaleString())}<br>${c.expiresAt ? escapeHtml(new Date(c.expiresAt).toLocaleString()) : 'No expiry'}</td>
-    <td>${c.received} / 30</td><td>${c.remaining}</td><td>${escapeHtml(c.status)}${c.status !== 'Active' ? '<br>Not accepting responses' : ''}</td>
+    <td>${c.received} / ${c.responseLimit}</td><td>${c.remaining}</td><td>${escapeHtml(c.status)}${c.status !== 'Active' ? '<br>Not accepting responses' : ''}</td>
     <td><button class="secondary" data-copycode="${c.id}">Copy code</button> <button class="secondary" data-invitecode="${c.id}">Copy invitation</button>
+    ${!['Revoked','Deleted'].includes(c.status) && c.responseLimit < 10000 ? `<div><label for="extraResponses-${c.id}">Additional responses</label> <input id="extraResponses-${c.id}" type="number" min="1" max="${10000-c.responseLimit}" step="1" value="1" style="width:6rem"> <button class="secondary" data-addresponses="${c.id}">Add responses</button></div>` : ''}
     ${!['Revoked','Deleted'].includes(c.status) ? `<button class="secondary" data-revokecode="${c.id}">Revoke</button>` : ''}
     ${c.status !== 'Deleted' ? `<button class="danger" data-deletecode="${c.id}">Delete</button>` : ''}</td></tr>`).join('')}</tbody></table>` : '<p>No codes yet. Click Create code to invite employees.</p>';
   for (const button of $('codesTable').querySelectorAll('[data-copycode],[data-invitecode]')) button.onclick = async () => {
     const c = CODE_ROWS.find(c=>c.id===Number(button.dataset.copycode || button.dataset.invitecode));
     if (!c) return;
-    const text = button.dataset.copycode ? c.code : `Please submit availability for ${c.folderName}.\nLink: ${formLink()}\nCode: ${c.code}\n${c.expiresAt ? 'Submit before '+new Date(c.expiresAt).toLocaleString()+'.\n' : ''}No account needed. This code allows 30 responses total.`;
+    const text = button.dataset.copycode ? c.code : `Please submit availability for ${c.folderName}.\nLink: ${formLink()}\nCode: ${c.code}\n${c.expiresAt ? 'Submit before '+new Date(c.expiresAt).toLocaleString()+'.\n' : ''}No account needed. This code allows ${c.responseLimit} responses total.`;
     const copied = await copyCollectionText(text); $('codesMsg').textContent = copied ? 'Copied.' : 'Invitation ready to copy.';
+  };
+  for (const button of $('codesTable').querySelectorAll('[data-addresponses]')) button.onclick = async () => {
+    const id = Number(button.dataset.addresponses), input = $(`extraResponses-${id}`);
+    if (!input.reportValidity()) return;
+    button.disabled = true;
+    const r = await apiSend(`/api/admin/codes/${id}/responses`, 'POST', {additionalResponses:Number(input.value)});
+    if (!r) return;
+    if (!r.ok) { $('codesMsg').textContent = r.data.error; button.disabled = false; return; }
+    const pause = r.data.status === 'Collection paused' ? ' The collection period is full; raise its separate limit below to accept more responses.' : '';
+    $('codesMsg').textContent = `Responses added. This code now allows ${r.data.responseLimit} total, with ${r.data.remaining} remaining.${pause}`;
+    await renderCodes();
   };
   for (const button of $('codesTable').querySelectorAll('[data-revokecode],[data-deletecode]')) button.onclick = async () => {
     const id = Number(button.dataset.revokecode || button.dataset.deletecode), deleting = !!button.dataset.deletecode;
@@ -106,7 +118,7 @@ function bindCollectionControls() {
   $('saveCollectionCapBtn').onclick = async () => {
     const r = await apiSend(`/api/admin/collections/${FOLDER_ID}`,'PUT',{responseCap:Number($('collectionResponseCap').value)});
     if (!r) return;
-    $('codesMsg').textContent=r.ok ? 'Collection limit saved. Each code still allows 30 responses.' : r.data.error;
+    $('codesMsg').textContent=r.ok ? 'Collection limit saved. Individual code limits are unchanged.' : r.data.error;
     if (r.ok) await renderCodes();
   };
 }

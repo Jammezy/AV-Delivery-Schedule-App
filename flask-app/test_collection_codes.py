@@ -38,6 +38,65 @@ class CollectionTests(unittest.TestCase):
   return (c or self.client).post('/api/availability',headers=h,json=data)
  def intake(self):return self.client.get('/api/admin/intake?folderId='+str(self.fid),headers=self.admin).json
  def accept(self,row,eid,version=None):return self.client.post(f'/api/admin/intake/{row["id"]}/review',headers=self.admin,json=dict(action='accept',employeeId=eid,reviewVersion=row['reviewVersion'],acceptedVersion=version))
+ def add_responses(self,code,amount,client=None,headers=None):
+  return (client or self.client).post(f'/api/admin/codes/{code["id"]}/responses',headers=self.admin if headers is None else headers,json={'additionalResponses':amount})
+ def test_add_responses_to_exhausted_code(self):
+  one=self.code();two=self.code();self.assertEqual(one['responseLimit'],30);h=self.unlock(one)
+  for _ in range(30):self.assertEqual(self.submit(h).status_code,200)
+  self.assertEqual(self.submit(h).status_code,409)
+  added=self.add_responses(one,2);self.assertEqual(added.status_code,200);self.assertEqual((added.json['responseLimit'],added.json['received'],added.json['remaining'],added.json['status']),(32,30,2,'Active'))
+  fresh=FlaskClient(web.app);self.unlock(one,fresh)
+  for _ in range(2):self.assertEqual(self.submit(h).status_code,200)
+  self.assertEqual(self.submit(h).status_code,409)
+  with db.connection_context():self.assertEqual(CollectionCode.get_by_id(two['id']).response_limit,30)
+  self.assertEqual(self.code()['responseLimit'],30)
+ def test_add_responses_permissions_validation_and_closed_codes(self):
+  code=self.code()
+  self.assertEqual(self.add_responses(code,2,headers={}).status_code,401)
+  for amount in [None,True,False,'2',2.5,0,-1,9971]:self.assertEqual(self.add_responses(code,amount).status_code,400)
+  self.assertEqual(self.add_responses({'id':999999},1).status_code,404)
+  self.assertEqual(self.add_responses(code,9970).json['responseLimit'],10000)
+  self.assertEqual(self.add_responses(code,1).status_code,400)
+  with db.connection_context():self.assertEqual(CollectionCode.get_by_id(code['id']).response_limit,10000)
+  for deleted in [False,True]:
+   stopped=self.code();self.client.open(f'/api/admin/codes/{stopped["id"]}',method='DELETE' if deleted else 'PATCH',headers=self.admin,json={})
+   self.assertEqual(self.add_responses(stopped,2).status_code,409)
+   with db.connection_context():self.assertEqual(CollectionCode.get_by_id(stopped['id']).response_limit,30)
+ def test_add_responses_does_not_reopen_expired_or_closed_collection(self):
+  code=self.code();h=self.unlock(code)
+  self.client.patch(f'/api/folders/{self.fid}',headers=self.admin,json={'activate':False})
+  self.assertEqual(self.add_responses(code,2).json['status'],'Collection closed');self.assertEqual(self.submit(h).status_code,409)
+  with db.connection_context():CollectionCode.update(expires_at=dt.datetime.utcnow()-dt.timedelta(seconds=1)).execute()
+  self.assertEqual(self.add_responses(code,2).json['status'],'Expired');self.assertEqual(self.submit(h).status_code,409)
+ def test_add_responses_keeps_period_cap(self):
+  code=self.code();h=self.unlock(code);self.client.put(f'/api/admin/collections/{self.fid}',headers=self.admin,json={'responseCap':30})
+  for _ in range(30):self.assertEqual(self.submit(h).status_code,200)
+  added=self.add_responses(code,2);self.assertEqual(added.json['status'],'Collection paused');self.assertEqual(added.json['remaining'],2)
+  self.assertEqual(self.submit(h).status_code,409)
+  self.client.put(f'/api/admin/collections/{self.fid}',headers=self.admin,json={'responseCap':32})
+  self.assertEqual(self.submit(h).status_code,200)
+  with db.connection_context():self.assertEqual(CollectionSettings.get().received,31)
+ def test_parallel_additions_and_increased_limit(self):
+  code=self.code()
+  def add(_):return self.add_responses(code,1,client=FlaskClient(web.app)).status_code
+  with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:self.assertEqual(list(pool.map(add,range(2))),[200,200])
+  h=self.unlock(code);cookie=self.client.get_cookie('availability_session',path='/api/').value
+  def send(i):
+   c=FlaskClient(web.app);c.set_cookie('availability_session',cookie,path='/api/');return self.submit(h,c,name=f'Added {i}').status_code
+  with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:statuses=list(pool.map(send,range(40)))
+  self.assertEqual(statuses.count(200),32,statuses);self.assertEqual(statuses.count(409),8,statuses)
+  with db.connection_context():self.assertEqual(CollectionCode.get_by_id(code['id']).response_limit,32);self.assertEqual(IntakeSubmission.select().count(),32)
+ def test_response_limit_migration_preserves_existing_data(self):
+  code=self.code();h=self.unlock(code);self.submit(h);self.add_responses(code,2)
+  init_db()
+  with db.connection_context():
+   row=CollectionCode.get_by_id(code['id']);self.assertEqual(row.response_limit,32);cipher=row.encrypted_code;verifier=row.verifier
+   db.execute_sql('ALTER TABLE collectioncode DROP COLUMN response_limit')
+  init_db();init_db()
+  with db.connection_context():
+   row=CollectionCode.get_by_id(code['id']);self.assertEqual((row.response_limit,row.received,row.encrypted_code,row.verifier),(30,1,cipher,verifier))
+   self.assertEqual(IntakeSubmission.select().count(),1);self.assertEqual(SubmissionSession.select().count(),1)
+  self.assertEqual(self.submit(h).status_code,200)
  def test_gate_privacy_and_permissions(self):
   self.assertEqual(self.submit({}).status_code,401)
   code=self.code();h=self.unlock(code);self.assertEqual(self.submit({}).status_code,403);self.assertEqual(self.submit(h).status_code,200)
