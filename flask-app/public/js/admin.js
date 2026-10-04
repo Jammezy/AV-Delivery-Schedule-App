@@ -854,7 +854,7 @@ function renderWeekendUI() {
     </tr>`;
   }).join('');
 
-  renderSavedWeekendSchedules();
+  return renderSavedWeekendSchedules();
 }
 
 window.removeWkndExcluded = (i) => {
