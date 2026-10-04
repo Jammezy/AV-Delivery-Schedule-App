@@ -396,7 +396,12 @@ class ConsentApiTests(unittest.TestCase):
         fid = self.context()['folder']['id']
         eid = self.record()['employeeId']
         def generate(roster,availability,cfg,seed=None):
-            self.submit(allowExtraOpenings=False)
+            # Consent-only edits preserve the frozen agreement during solving.
+            # A full resubmission now invalidates in-flight generation instead.
+            self.client.put('/api/admin/boundary-permissions', headers=self.headers, json=dict(
+                folderId=fid, employeeId=eid, permissionVersion=self.record()['permissionVersion'],
+                consentContext=self.context()['boundaryContext']['token'],
+                allowExtraOpenings=False, allowExtraClosings=False))
             self.client.put('/api/config',headers=self.headers,json={'maxMorningShifts':4})
             return {'status':'FEASIBLE','work':{},'schedule':{},'fairness':[]}
         with patch.object(web.solver_module,'generate_schedule',side_effect=generate):

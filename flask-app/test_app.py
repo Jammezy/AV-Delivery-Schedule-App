@@ -24,9 +24,10 @@ from backup_db import backup
 
 
 from test_folder_deletion import FolderDeletionTests
+from test_retention import RetentionTests
 
 
-class AppTests(FolderDeletionTests, unittest.TestCase):
+class AppTests(RetentionTests, FolderDeletionTests, unittest.TestCase):
     def lead_config(self, **changes):
         cfg = web.get_config()
         cfg.update(days=['Mon'], hourStart=17, hourEnd=19, lateHourStart=19,

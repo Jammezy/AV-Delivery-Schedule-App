@@ -46,6 +46,8 @@ jobs:
           TEST_POSTGRES_PORT: ${{ job.services.postgres.ports[5432] }}
       - run: node test_deletion_browser.cjs 2>&1 | tee test-browser.log
         if: ${{ !cancelled() }}
+      - run: node test_retention_browser.cjs 2>&1 | tee test-retention-browser.log
+        if: ${{ !cancelled() }}
       - run: node test_boundary_browser.cjs 2>&1 | tee test-boundary-browser.log
         if: ${{ !cancelled() }}
       - run: node test_supervisor_availability_browser.cjs 2>&1 | tee test-supervisor-browser.log
@@ -60,7 +62,7 @@ jobs:
           script: |
             const fs = require('fs');
             let summary = '';
-            for (const kind of ['backend','frontend','postgres','browser','boundary-browser','supervisor-browser','permissions-browser','solver']) {
+            for (const kind of ['backend','frontend','postgres','browser','retention-browser','boundary-browser','supervisor-browser','permissions-browser','solver']) {
               const path = `flask-app/test-${kind}.log`;
               if (fs.existsSync(path)) summary += `### ${kind}\n\n\`\`\`text\n${fs.readFileSync(path,'utf8').slice(-13000)}\n\`\`\`\n\n`;
             }

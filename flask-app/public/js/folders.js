@@ -3,6 +3,16 @@ let SELECTED = new Set(), OVERVIEW = null, PINNED = null, PREVIEWED = null;
 let VIEW_REVISION = 0;
 let OVERVIEW_REQUEST = 0;
 const PERMISSION_DRAFTS = new Map();
+let RECOVERING_CONTENT = false;
+
+async function recoverRemovedContent() {
+  if (RECOVERING_CONTENT) return;
+  RECOVERING_CONTENT = true;
+  try {
+    clearFolderView();
+    await loadFolders();
+  } finally { RECOVERING_CONTENT = false; }
+}
 
 function $(id) { return document.getElementById(id); }
 
@@ -85,6 +95,12 @@ async function renderFolderOverview(reset = false) {
   const submitted = data.employees.filter(e => Object.hasOwn(data.availability, e.name));
   submitted.sort((a,b) => Object.keys(validAvailability(data.availability[b.name])).length - Object.keys(validAvailability(data.availability[a.name])).length || a.name.localeCompare(b.name));
   const ids = new Set(submitted.map(e => e.id));
+  if (PINNED !== null && !ids.has(PINNED)) PINNED = null;
+  if (PREVIEWED !== null && !ids.has(PREVIEWED)) PREVIEWED = null;
+  for (const key of PERMISSION_DRAFTS.keys()) {
+    if (!ids.has(Number(key.split(":")[1]))) PERMISSION_DRAFTS.delete(key);
+  }
+  if (editAvailEmployee && !ids.has(editAvailEmployee.id)) closeEditAvailabilityModal();
   SELECTED = reset ? ids : new Set([...SELECTED].filter(id => ids.has(id)));
   $("generatorSelection").innerHTML = `<p id="selectedCount"></p>` + submitted.map(e => `<label class="selection-person"><input type="checkbox" data-select="${e.id}" ${SELECTED.has(e.id) ? "checked" : ""}> ${escapeHtml(e.name)}</label>`).join("");
   $("generatorSelection").querySelectorAll("[data-select]").forEach(box => box.onchange = () => {
