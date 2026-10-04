@@ -627,6 +627,40 @@ test('pending weekday, weekend and overview responses cannot repopulate a delete
   assert.equal(doc.getElementById('savedSchedules').textContent,'');assert.equal(doc.getElementById('wkndSavedSchedules').textContent,'');dom.window.close();
 });
 
+test('changing folders on Weekend restores fixed assignments and rotation controls',async()=>{
+  const {doc,run,dom}=await admin();
+  run(`EMPLOYEES=${JSON.stringify(overview.employees)};FOLDERS=[{id:1,name:'Fall'},{id:2,name:'Winter'}];renderFolderControls();refreshDiagnostics=async()=>{};`);
+  dom.window.fetch=async url=>({ok:true,status:200,json:async()=>url.startsWith('/api/availability?') ? structuredClone(overview) : []});
+  doc.querySelector('[data-tab="weekend"]').click();
+  assert.equal(doc.querySelectorAll('#wkndFixedTable tbody select').length,6);
+  assert.equal(doc.querySelectorAll('#wkndRotatingTable tbody tr').length,3);
+  run("updateWkndFixed('friday_evening', '1'); LAST_WKND_PREVIEW={folderId:1};");
+  doc.getElementById('wkndStart').value='2026-10-09';
+  doc.getElementById('wkndPreviewArea').textContent='Old folder preview';
+  doc.getElementById('folderSelect').value='2';
+  await doc.getElementById('folderSelect').onchange();
+  assert.equal(run('FOLDER_ID'),2);
+  assert.equal(doc.querySelector('.tabs .active').dataset.tab,'weekend');
+  assert.equal(doc.getElementById('tab-weekend').style.display,'block');
+  const selectors=doc.querySelectorAll('#wkndFixedTable tbody select');
+  assert.equal(selectors.length,6);
+  for(const select of selectors) {
+    assert.equal(select.value,'');
+    assert.equal(select.options.length,4);
+  }
+  assert.equal(doc.querySelectorAll('#wkndRotatingTable tbody tr').length,3);
+  assert.equal(doc.getElementById('wkndStart').value,'');
+  assert.equal(doc.getElementById('wkndPreviewArea').textContent,'');
+  assert.equal(run('LAST_WKND_PREVIEW'),null);
+  assert.match(selectors[0].getAttribute('onchange'),/updateWkndFixed/);
+  run("updateWkndFixed('friday_evening','2')");
+  assert.equal(run('WKND_FIXED.friday_evening'),2);
+  run("updateWkndFixed('friday_evening','')");
+  assert.equal(run('WKND_FIXED.friday_evening'),undefined);
+  run('moveWkndRotating(0,1)');assert.equal(run('WKND_ROTATING_ORDER[0]'),2);
+  dom.window.close();
+});
+
 test('weekend generate and save use API response data and retain the folder identity',async()=>{
   const {doc,run,dom}=await admin();
   const data={folderId:1,folderVersion:'2026-01-01',employees:[],assignments:[],rotating_counts:{},effective_pool:[]};
