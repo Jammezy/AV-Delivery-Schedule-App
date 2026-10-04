@@ -14,14 +14,14 @@
 
 <main>
   <div class="card">
-    <p class="hint">Saturday and Sunday are saved for reference. The generator still schedules weekdays only.</p></div>
+    <p class="hint">Submit your availability for weekdays and weekends. Your responses are saved automatically to your code’s scheduling folder.</p></div>
   <div class="card" id="codeGate">
     <h2>Enter your collection code</h2>
     <label for="collectionCode">Code from your supervisor</label>
     <input id="collectionCode" autocomplete="off" autocapitalize="characters" maxlength="40" placeholder="ABCD-EFGH-JKLM">
     <button id="unlockBtn">Continue</button>
     <p id="codeGateMsg" role="status"></p>
-    <p class="hint">No account needed. Each code allows up to 30 responses total.</p>
+    <p class="hint">No account needed. Enter the code your supervisor provided to submit availability.</p>
   </div>
   <div id="availabilityForm" hidden>
   <div class="card">
@@ -29,8 +29,9 @@
     <label for="nameInput">First and last name</label>
     <input type="text" id="nameInput" placeholder="First and last name" maxlength="100"
            autocomplete="name" autocapitalize="words">
-    <p class="hint">Your supervisor reviews each response. Submitting again creates a new sheet; it does not replace your earlier answers.</p>
+    <p class="hint">Every submission is saved separately. Existing availability is never overwritten. Repeated names receive a numbered employee entry.</p>
     <p id="collectionDestination" role="status"></p>
+    <p id="codeResponseAllowance" class="hint" role="status"></p>
   </div>
 
   <div class="card">
@@ -88,7 +89,7 @@
     <p id="commentCount" role="status">0 / 99 characters</p></div>
   <div id="msgArea" role="status"></div>
   <button id="submitBtn">Submit availability</button>
-  <button id="newSheetBtn" class="secondary" hidden>Submit another sheet</button>
+  <button id="newSheetBtn" class="secondary" hidden>Enter a code for another submission</button>
   </div>
 </main>
 

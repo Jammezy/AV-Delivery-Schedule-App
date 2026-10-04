@@ -29,11 +29,8 @@
       <div class="row"><label for="folderSelect">Viewing folder</label><select id="folderSelect"></select></div>
       <p id="folderStatus" role="status"></p>
       <div class="row"><input id="newFolderName" aria-label="New folder name" placeholder="Fall 2026" maxlength="100">
-        <label><input id="activateNewFolder" type="checkbox"> Accept submissions here</label>
         <button id="createFolderBtn">Create folder</button></div>
       <div class="row"><button id="renameFolderBtn" class="secondary">Rename</button>
-        <button id="activateFolderBtn" class="secondary">Accept submissions here</button>
-        <button id="stopFolderBtn" class="secondary">Stop accepting submissions</button>
         <button id="archiveFolderBtn" class="secondary">Archive / restore</button>
         <button id="deleteFolderBtn" class="danger">Delete folder permanently</button></div>
       <p id="folderMsg" role="status"></p>
@@ -150,12 +147,12 @@
     </section>
 
     <section id="tab-overview" class="card" style="display:none;">
-      <h2>Review responses</h2>
-      <p class="hint">Shared codes allow responses without verifying identity. Review the name and answers, then choose which sheet to use. Only accepted sheets go to the generator.</p>
+      <h2>Response history</h2>
+      <p class="hint">A valid code authorizes availability to be saved automatically to its folder. Every submission creates a separate employee entry automatically. Repeated names receive a number. Existing availability is never overwritten.</p>
       <button id="refreshIntakeBtn" class="secondary">Refresh responses</button>
       <p id="intakeMsg" role="status"></p>
       <div id="intakeArea"></div>
-      <h2>Accepted availability</h2>
+      <h2>Current availability</h2>
       <div id="overviewArea"></div>
 
       <div id="editAvailabilityModal" class="card" style="display:none; position:fixed; top:5%; left:5%; right:5%; bottom:5%; z-index:1000; overflow-y:auto; box-shadow:0 8px 24px rgba(0,0,0,0.3); background:white;">
@@ -195,6 +192,9 @@
 
     <section id="tab-codes" class="card" style="display:none;">
       <h2>Codes</h2>
+      <label for="codesFolderSelect">Scheduling folder</label>
+      <select id="codesFolderSelect"></select>
+      <p class="hint">New codes belong to the selected folder. Responses submitted with a code go into that code’s folder.</p>
       <p class="hint">New codes start with 30 responses. Add additional responses to an individual code below, or create another code. Everyone uses the same employee-form link.</p>
       <p id="codesCollectionStatus" role="status"></p>
       <div class="row">
@@ -203,17 +203,17 @@
         <button id="createCodeBtn">Create code</button>
       </div>
       <div class="row">
-        <button id="openCodeCollectionBtn" class="secondary">Open collection</button>
-        <button id="closeCodeCollectionBtn" class="secondary">Close collection</button>
         <button id="refreshCodesBtn" class="secondary">Refresh codes</button>
         <label><input id="showDeletedCodes" type="checkbox"> Show deleted</label>
       </div>
       <p id="codesMsg" role="status"></p>
       <div id="codesTable" class="scroll-x"></div>
-      <details><summary>Collection response limit</summary>
-        <p>This is a separate limit across all codes in this period. Adding responses to a code does not raise this limit.</p>
-        <label>Maximum responses this period <input id="collectionResponseCap" type="number" min="30" max="10000" step="1"></label>
-        <button id="saveCollectionCapBtn" class="secondary">Save limit</button>
+      <details><summary>Folder submission limit</summary>
+        <p id="folderLimitName"></p>
+        <p>This folder can receive up to the saved submission limit across all its codes combined. New folders default to 100 submissions. Each code has its own response allowance, starting at 30. Adding responses to a code does not increase the folder’s total submission limit.</p>
+        <p>Repeat submissions and corrections count toward both limits. Rejecting or deleting a response does not restore the allowance. The folder limit does not reset weekly or monthly.</p>
+        <label>Maximum total submissions for this folder <input id="collectionResponseCap" type="number" min="30" max="10000" step="1"></label>
+        <button id="saveCollectionCapBtn" class="secondary">Save folder limit</button>
       </details>
     </section>
 

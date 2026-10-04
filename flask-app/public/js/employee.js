@@ -252,11 +252,19 @@ function showMsg(text, type) {
 // ---------------- data ----------------
 let CSRF = null, REQUEST_ID = null, LAST_PAYLOAD = null, SAVED = false;
 
+function updateCollectionDetails() {
+  $("collectionDestination").textContent = CONTEXT?.unlocked ? `Submitting to scheduling folder: ${CONTEXT.folder?.name || "Folder closed"}` : "";
+  $("codeResponseAllowance").textContent = CONTEXT?.unlocked && CSRF && Number.isInteger(CONTEXT.responseLimit)
+    ? `No account needed. This code allows up to ${CONTEXT.responseLimit} responses total, shared by everyone using it.` : "";
+}
+
 function useContext(next) {
   CONTEXT = next; CONFIG = next.config; CSRF = next.csrf || null;
+  SAVED = !!next.submitted; $("newSheetBtn").hidden = !SAVED;
+  $("nameInput").readOnly = !!next.edit;
   $("availabilityForm").hidden = !next.unlocked;
   $("codeGate").hidden = !!next.unlocked;
-  $("collectionDestination").textContent = `Submitting to: ${next.folder?.name || "Collection closed"}`;
+  updateCollectionDetails();
   if (next.edit) {
     $("nameInput").value = next.edit.name; $("nameInput").readOnly = true;
     state = next.edit.availability || {}; $("commentInput").value = next.edit.comment || "";
@@ -271,7 +279,9 @@ async function unlock(editToken = null) {
       body:JSON.stringify(editToken ? {editToken} : {code:$("collectionCode").value})});
     const data = await res.json();
     if (!res.ok) { $("codeGateMsg").textContent = data.error || "Could not open the form."; return; }
-    $("collectionCode").value = ""; SAVED = false; useContext(data); $("nameInput").focus();
+    $("collectionCode").value = "";
+    if (SAVED) { state = {}; $("nameInput").value = ""; $("commentInput").value = ""; resetConsent(); updateCommentCount(); REQUEST_ID = LAST_PAYLOAD = null; }
+    $("codeGateMsg").textContent = ""; useContext(data); $("nameInput").focus();
   } catch (_) { $("codeGateMsg").textContent = "Connection failed. Please retry."; }
   finally { $("unlockBtn").disabled = false; }
 }
@@ -287,6 +297,8 @@ async function submitAvailability() {
   SUBMITTING = true;
   $("submitBtn").disabled = true;
   try {
+    if (!await refreshContext()) return showMsg($("codeGateMsg").textContent, "err");
+    if (CONSENT_RECONFIRM) return showMsg("Settings changed. Reconfirm your consent choices before submitting.", "err");
     const payload = {name, availability:state, comment:$("commentInput").value, folderId:CONTEXT.folder.id, revision:CONTEXT.revision,
       allowExtraOpenings:$("allowExtraOpenings").checked, allowExtraClosings:$("allowExtraClosings").checked,
       consentContext:CONTEXT.boundaryContext?.token};
@@ -307,8 +319,8 @@ async function submitAvailability() {
       return showMsg(data.error || "That didn't save. Try again.", "err");
     }
 
-    SAVED = true; $("newSheetBtn").hidden = !!CONTEXT.edit;
-    showMsg(`Saved — ${data.availableHours} available, ${data.preferredHours} preferred. Your supervisor will review this response.`, "ok");
+    SAVED = true; $("newSheetBtn").hidden = false;
+    showMsg(`Saved to ${CONTEXT.folder.name} — ${data.availableHours} available, ${data.preferredHours} preferred. Your availability is ready for scheduling.`, "ok");
   } catch (_) { showMsg("Could not save. Your entries are still here; please retry.", "err");
   } finally {
     SUBMITTING = false;
@@ -319,11 +331,23 @@ async function submitAvailability() {
 function updateCommentCount() { $("commentCount").textContent = `${[...$("commentInput").value].length} / 99 characters`; }
 async function refreshContext() {
   const res = await fetch(CSRF ? "/api/collection/context" : "/api/submission-context");
-  if (!res.ok) { $("codeGate").hidden = false; CSRF = null; $("codeGateMsg").textContent = "Enter a current code to continue. Your unsaved answers are still here."; return; }
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    $("codeGate").hidden = false; CSRF = null; updateCollectionDetails();
+    $("codeGateMsg").textContent = `${error.error || 'Enter a current code to continue.'} Your unsaved answers are still here.`;
+    return false;
+  }
   const next = await res.json();
+  if (CONTEXT?.unlocked && (next.folder?.id !== CONTEXT.folder?.id || next.revision !== CONTEXT.revision)) {
+    CSRF = null; $("codeGate").hidden = false; updateCollectionDetails();
+    $("codeGateMsg").textContent = "The scheduling folder changed. Enter a current code to confirm the destination. Your unsaved answers are still here.";
+    return false;
+  }
   if (CONTEXT && next.boundaryContext?.token !== CONTEXT.boundaryContext?.token) CONSENT_RECONFIRM = true;
   CONTEXT = next; CONFIG = next.config; CSRF = next.csrf || null;
+  updateCollectionDetails();
   renderGrid();
+  return true;
 }
 
 // ---------------- boot ----------------
@@ -342,9 +366,10 @@ async function refreshContext() {
   $("unlockBtn").onclick = () => unlock();
   $("collectionCode").onkeydown = event => { if (event.key === "Enter") unlock(); };
   $("newSheetBtn").onclick = () => {
-    SAVED = false; REQUEST_ID = LAST_PAYLOAD = null; $("newSheetBtn").hidden = true;
-    state = {}; $("nameInput").value = ""; $("commentInput").value = ""; resetConsent(); updateCommentCount(); renderGrid();
-    $("nameInput").focus();
+    CSRF = null; $("newSheetBtn").hidden = true;
+    $("codeGate").hidden = false;
+    $("codeGateMsg").textContent = "Enter your supervisor’s code again for another submission. The code determines its scheduling folder.";
+    $("submitBtn").disabled = true; $("collectionCode").value = ""; $("collectionCode").focus();
   };
   window.addEventListener("hashchange", async () => {
     const token = new URLSearchParams(location.hash.slice(1)).get("edit");

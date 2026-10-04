@@ -113,7 +113,7 @@ class AdminSession(BaseModel):
 
 class CollectionSettings(BaseModel):
     folder = ForeignKeyField(Folder, unique=True, on_delete="CASCADE")
-    response_cap = IntegerField(default=300)
+    response_cap = IntegerField(default=100)
     received = IntegerField(default=0)
 
 
@@ -158,6 +158,7 @@ class EditGrant(BaseModel):
 
 
 class SubmissionSession(BaseModel):
+    submitted_request_key = CharField(null=True)
     code = ForeignKeyField(CollectionCode, on_delete="CASCADE")
     token_hash = CharField(unique=True)
     state_revision = IntegerField()
@@ -294,6 +295,8 @@ def init_db():
             # A constant SQL default backfills existing rows without rebuilding the
             # referenced code table (SQLite table rebuilds would break its children).
             db.execute_sql('ALTER TABLE collectioncode ADD COLUMN response_limit INTEGER NOT NULL DEFAULT 30')
+        if 'submitted_request_key' not in {c.name for c in db.get_columns('submissionsession')}:
+            db.execute_sql('ALTER TABLE submissionsession ADD COLUMN submitted_request_key VARCHAR(255) NULL')
         columns = {c.name for c in db.get_columns('folderavailability')}
         for name, field in [('allow_extra_openings', BooleanField(default=False)),
                             ('allow_extra_closings', BooleanField(default=False)),

@@ -131,7 +131,7 @@ async function check(viewport) {
     await fixtureAPI.accept('Alex');
     const saved=await (await page.request.get(`http://127.0.0.1:5098/api/folders/1/schedules/${generated.savedScheduleId}`,{headers})).json();
     assert.equal(saved.result.config.maxMorningShifts,2);
-    assert.equal(saved.submissions.find(s=>s.employeeId===ids[0]).consent.allowExtraOpenings,true);
+    for(const row of saved.submissions) assert.equal(row.consent.allowExtraOpenings,overview.submissions.find(s=>s.employeeId===row.employeeId).consent.allowExtraOpenings);
     await page.route('https://cdnjs.cloudflare.com/**',route=>route.abort());
     await page.goto('http://127.0.0.1:5098/admin.html');
     await page.locator('#passwordInput').fill('browser-test');await page.locator('#loginBtn').click();
@@ -139,7 +139,10 @@ async function check(viewport) {
     await page.locator('[data-tab=overview]').click();
     await page.locator('[data-person="1"]').click();
     assert.match(await page.locator('#viewerConsent').innerText(),/Additional openings: not opted in/);
-    await page.locator('[data-person="2"]').click();
+    const history=(await (await page.request.get('http://127.0.0.1:5098/api/admin/intake?folderId=1',{headers})).json()).submissions;
+    const latest=history.find(r=>r.name==='Alex');await page.locator(`[data-person="${latest.employeeId}"]`).click();
+    assert.match(await page.locator('#viewerConsent').innerText(),/Additional openings: not opted in/);
+    const blair=history.find(r=>r.name==='Blair');await page.locator(`[data-person="${blair.employeeId}"]`).click();
     assert.match(await page.locator('#viewerConsent').innerText(),/Reconfirmation required/);
     const statusBox=await page.locator('#viewerConsent').boundingBox();
     assert.ok(statusBox.x>=0&&statusBox.x+statusBox.width<=viewport.width+1);

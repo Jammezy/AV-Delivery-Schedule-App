@@ -86,7 +86,7 @@ assert client.get('/api/folders',headers=headers).status_code == 401
 db.connect(reuse_if_open=True)
 FolderAvailability.update(submitted_at=datetime.datetime(2026,1,1)).execute()
 db.close()
-code = "from app import app; c=app.test_client(); x=c.get('/api/submission-context').json; t=c.post('/api/admin/login',json={'password':'test-admin'}).json['token']; r=c.get('/api/availability/Alex?folderId='+str(x['folder']['id']),headers={'Authorization':'Bearer '+t}); assert r.json['comment']=='Persistent'; assert r.json['availability']['Mon_07']==2"
+code = "from app import app; c=app.test_client(); x=c.get('/api/submission-context').json; t=c.post('/api/admin/login',json={'password':'test-admin'}).json['token']; r=c.get('/api/availability/Alex%20(2)?folderId='+str(x['folder']['id']),headers={'Authorization':'Bearer '+t}); assert r.json['comment']=='Persistent'; assert r.json['availability']['Mon_07']==2"
 result = subprocess.run([sys.executable,'-c',code],cwd=Path(__file__).parent,env=os.environ,capture_output=True,text=True)
 assert result.returncode == 0, result.stderr
 print('PASS PostgreSQL: concurrent startup/migration, legacy preferences/settings, concurrent submissions, folder isolation, stale form rejection, saved snapshot, logout, and fresh-process persistence.')

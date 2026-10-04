@@ -177,8 +177,8 @@ class RetentionTests:
             consentContext=ctx['boundaryContext']['token'], allowExtraOpenings=True, allowExtraClosings=False)).status_code, 200)
         self.assertEqual(self.submit('Resubmit').status_code, 200)
         result = self.cleanup(apply=True)
-        self.assertEqual(result['deleted']['availability'], 2)
-        self.assertEqual(set(self.overview(folder_id)['availability']), {'Equal', 'After', 'Resubmit'})
+        self.assertEqual(result['deleted']['availability'], 3)
+        self.assertEqual(set(self.overview(folder_id)['availability']), {'Equal', 'After', 'Resubmit (2)'})
 
     def test_retention_dry_run_changes_no_rows_or_schema(self):
         self.retention_fixture()

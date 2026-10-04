@@ -221,12 +221,18 @@ class ConsentApiTests(unittest.TestCase):
         return self.client.post('/api/availability',json=payload)
 
     def record(self):
-        return self.client.get('/api/availability/A',query_string={'folderId':self.context()['folder']['id']}).json
+        fid = self.context()['folder']['id']
+        overview = self.overview(fid)
+        submitted = {r['employeeId'] for r in overview['submissions']}
+        rows = [e for e in overview['employees'] if e['id'] in submitted and (e['name'] == 'A' or e['name'].startswith('A ('))]
+        name = max(rows,key=lambda e:e['id'])['name'] if rows else 'A'
+        return self.client.get('/api/availability/'+name,query_string={'folderId':fid}).json
 
     def permission_payload(self, employee_id=None, folder_id=None):
         folder_id = folder_id or self.context()['folder']['id']
         overview = self.overview(folder_id)
-        row = next(s for s in overview['submissions'] if employee_id is None or s['employeeId'] == employee_id)
+        employee_id = employee_id or self.record()['employeeId']
+        row = next(s for s in overview['submissions'] if s['employeeId'] == employee_id)
         return dict(employeeId=row['employeeId'], folderId=folder_id,
                     permissionVersion=row['permissionVersion'], consentContext=overview['boundaryContext']['token'],
                     allowExtraOpenings=row['consent']['allowExtraOpenings'],
@@ -298,8 +304,8 @@ class ConsentApiTests(unittest.TestCase):
         self.client.put('/api/config',headers=self.headers,json={'minShiftLength':2,'maxShiftLength':5})
         self.assertEqual(self.save_permissions(payload).status_code,200)
         payload = self.permission_payload()
-        self.submit(comment='concurrent employee edit')
-        self.assertEqual(self.save_permissions(payload).status_code,409)
+        self.submit(comment='separate employee submission')
+        self.assertEqual(self.save_permissions(payload).status_code,200)  # Separate submission cannot invalidate this employee's permissions.
         payload = self.permission_payload()
         self.client.put('/api/config',headers=self.headers,json={'maxMorningShifts':3})
         self.assertEqual(self.save_permissions(payload).status_code,409)
