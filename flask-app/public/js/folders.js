@@ -76,7 +76,7 @@ async function changeFolder() {
   if (revision !== VIEW_REVISION) return;
   await loadSavedSchedules();
   if (revision !== VIEW_REVISION) return;
-  await renderSavedWeekendSchedules();
+  await renderWeekendUI();
   if (revision !== VIEW_REVISION) return;
   await renderCodes();
 }
