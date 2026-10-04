@@ -152,7 +152,8 @@ class AppTests(RetentionTests, FolderDeletionTests, unittest.TestCase):
         self.path = TEST_DIR / (self._testMethodName + ".db")
         db.init(str(self.path))
         init_db()
-        self.client = web.app.test_client()
+        from legacy_test_client import LegacyFixtureClient
+        self.client = LegacyFixtureClient(web.app)
         token = self.client.post("/api/admin/login", json={"password": "test-admin"}).json["token"]
         self.headers = {"Authorization": "Bearer " + token}
 
@@ -368,7 +369,7 @@ class AppTests(RetentionTests, FolderDeletionTests, unittest.TestCase):
         FolderAvailability.update(submitted_at=datetime.datetime.utcnow()-datetime.timedelta(days=30)).execute()
         db.close()
         env = dict(os.environ, DATABASE_PATH=str(self.path))
-        code = "from app import app; c=app.test_client(); x=c.get('/api/submission-context').json; r=c.get('/api/availability/Alex?folderId='+str(x['folder']['id'])); assert r.json['comment']=='Keep me'; print('restart persisted')"
+        code = "from app import app; c=app.test_client(); x=c.get('/api/submission-context').json; t=c.post('/api/admin/login',json={'password':'test-admin'}).json['token']; r=c.get('/api/availability/Alex?folderId='+str(x['folder']['id']),headers={'Authorization':'Bearer '+t}); assert r.json['comment']=='Keep me'; print('restart persisted')"
         result = subprocess.run([sys.executable,"-c",code], env=env, cwd=Path(__file__).parent, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         backup_path = TEST_DIR / "backup.db"

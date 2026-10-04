@@ -9,7 +9,6 @@
 let CONFIG = null;
 let CONTEXT = null;
 let LOAD_REVISION = 0;
-let ROSTER = { names: [], allowSelfRegister: true };
 let EMPLOYEE = null;
 let state = {};
 let mode = 1;
@@ -62,7 +61,7 @@ function updateConsent() {
   ].filter(Boolean).join(" ");
   $("clearBoundaryConsent").hidden = !hasConsent;
   $("reconfirmConsent").hidden = !CONSENT_RECONFIRM;
-  $("submitBtn").disabled = SUBMITTING || CONSENT_RECONFIRM || !CONTEXT?.folder;
+  $("submitBtn").disabled = SUBMITTING || SAVED || CONSENT_RECONFIRM || !CSRF || !CONTEXT?.folder;
 }
 
 const $ = (id) => document.getElementById(id);
@@ -246,51 +245,39 @@ function updateTally() {
 }
 
 function showMsg(text, type) {
-  $("msgArea").innerHTML = `<div class="msg ${type}">${text}</div>`;
+  $("msgArea").innerHTML = `<div class="msg ${type}">${escapeHtml(text)}</div>`;
   $("msgArea").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 // ---------------- data ----------------
-async function loadRoster() {
-  try {
-    ROSTER = await fetch("/api/roster").then((r) => r.json());
-    $("rosterList").innerHTML = ROSTER.names
-      .map((n) => `<option value="${escapeHtml(n)}"></option>`).join("");
-  } catch (_) { /* autocomplete is a nicety, not a requirement */ }
-}
+let CSRF = null, REQUEST_ID = null, LAST_PAYLOAD = null, SAVED = false;
 
-async function loadPrevious(quiet) {
-  const name = $("nameInput").value.trim();
-  if (!name) { if (!quiet) showMsg("Type your name first.", "err"); return; }
-  if (!CONTEXT?.folder) return;
-  const revision = ++LOAD_REVISION;
-  const folderId = CONTEXT.folder.id;
-  const res = await fetch(`/api/availability/${encodeURIComponent(name)}?folderId=${folderId}`);
-  const data = await res.json();
-  if (revision !== LOAD_REVISION || folderId !== CONTEXT?.folder?.id || name !== $("nameInput").value.trim()) return;
-  if (!res.ok) { showMsg(escapeHtml(data.error || "Could not load submission."), "err"); return; }
-  EMPLOYEE = data.employee || null;
-  if (data.boundaryContext && data.config) {
-    CONTEXT.boundaryContext = data.boundaryContext;
-    CONTEXT.config = CONFIG = data.config;
+function useContext(next) {
+  CONTEXT = next; CONFIG = next.config; CSRF = next.csrf || null;
+  $("availabilityForm").hidden = !next.unlocked;
+  $("codeGate").hidden = !!next.unlocked;
+  $("collectionDestination").textContent = `Submitting to: ${next.folder?.name || "Collection closed"}`;
+  if (next.edit) {
+    $("nameInput").value = next.edit.name; $("nameInput").readOnly = true;
+    state = next.edit.availability || {}; $("commentInput").value = next.edit.comment || "";
+    resetConsent(next.edit.consent); updateCommentCount();
   }
-  resetConsent(data.consent);
-  if (!data.found) {
-    state = {}; $("commentInput").value = ""; updateCommentCount(); renderGrid();
-    if (!quiet) showMsg("No previous submission under that name — start fresh below.", "info");
-    updateTally();
-    return;
-  }
-  state = {};
-  $("commentInput").value = data.comment || ""; updateCommentCount();
-  for (const [k, v] of Object.entries(data.availability || {})) state[k] = Number(v);
   renderGrid();
-  const when = data.submittedAt ? new Date(data.submittedAt).toLocaleString() : "earlier";
-  showMsg(`Loaded what you submitted ${when}. Change anything that's different this week.`, "ok");
+}
+async function unlock(editToken = null) {
+  $("unlockBtn").disabled = true;
+  try {
+    const res = await fetch("/api/collection/unlock", {method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(editToken ? {editToken} : {code:$("collectionCode").value})});
+    const data = await res.json();
+    if (!res.ok) { $("codeGateMsg").textContent = data.error || "Could not open the form."; return; }
+    $("collectionCode").value = ""; SAVED = false; useContext(data); $("nameInput").focus();
+  } catch (_) { $("codeGateMsg").textContent = "Connection failed. Please retry."; }
+  finally { $("unlockBtn").disabled = false; }
 }
 
 async function submitAvailability() {
-  if (SUBMITTING || CONSENT_RECONFIRM) return;
+  if (SUBMITTING || CONSENT_RECONFIRM || SAVED || !CSRF) return;
   const name = $("nameInput").value.trim();
   if (!name) return showMsg("Enter your name before submitting.", "err");
   const avail = Object.values(state).filter((v) => v >= 1).length;
@@ -300,12 +287,15 @@ async function submitAvailability() {
   SUBMITTING = true;
   $("submitBtn").disabled = true;
   try {
+    const payload = {name, availability:state, comment:$("commentInput").value, folderId:CONTEXT.folder.id, revision:CONTEXT.revision,
+      allowExtraOpenings:$("allowExtraOpenings").checked, allowExtraClosings:$("allowExtraClosings").checked,
+      consentContext:CONTEXT.boundaryContext?.token};
+    const serialized = JSON.stringify(payload);
+    if (serialized !== LAST_PAYLOAD) { REQUEST_ID = crypto.randomUUID(); LAST_PAYLOAD = serialized; }
     const res = await fetch("/api/availability", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, availability: state, comment:$("commentInput").value, folderId:CONTEXT.folder.id, revision:CONTEXT.revision,
-        allowExtraOpenings: $("allowExtraOpenings").checked, allowExtraClosings: $("allowExtraClosings").checked,
-        consentContext: CONTEXT.boundaryContext?.token }),
+      headers: {"Content-Type":"application/json", "X-Submission-CSRF":CSRF},
+      body:JSON.stringify({...payload, requestId:REQUEST_ID}),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -314,35 +304,25 @@ async function submitAvailability() {
         await refreshContext(); // Preserve the unsaved grid, comment and choices.
         updateConsent();
       }
-      return showMsg(escapeHtml(data.error || "That didn't save. Try again."), "err");
+      return showMsg(data.error || "That didn't save. Try again.", "err");
     }
 
-    let extra = "";
-    if (data.shortOfMinimum > 0) {
-      extra = ` Heads up: you're ${data.shortOfMinimum} hours below your ${data.minHours} hour ` +
-        `weekly minimum, so the schedule may not be able to include you. Add more hours if you can.`;
-    } else if (!data.preferredHours) {
-      extra = " You didn't mark any preferred hours, so you'll be treated as flexible.";
-    }
-    showMsg(`Saved — ${data.availableHours} available, ${data.preferredHours} preferred.${escapeHtml(extra)}`,
-      data.shortOfMinimum > 0 ? "warn" : "ok");
+    SAVED = true; $("newSheetBtn").hidden = !!CONTEXT.edit;
+    showMsg(`Saved — ${data.availableHours} available, ${data.preferredHours} preferred. Your supervisor will review this response.`, "ok");
   } catch (_) { showMsg("Could not save. Your entries are still here; please retry.", "err");
   } finally {
     SUBMITTING = false;
-    $("submitBtn").disabled = CONSENT_RECONFIRM || !CONTEXT?.folder;
+    $("submitBtn").disabled = SAVED || CONSENT_RECONFIRM || !CSRF || !CONTEXT?.folder;
   }
 }
 
 function updateCommentCount() { $("commentCount").textContent = `${[...$("commentInput").value].length} / 99 characters`; }
 async function refreshContext() {
-  const res = await fetch("/api/submission-context");
-  if (!res.ok) throw new Error("Could not load submission folder.");
+  const res = await fetch(CSRF ? "/api/collection/context" : "/api/submission-context");
+  if (!res.ok) { $("codeGate").hidden = false; CSRF = null; $("codeGateMsg").textContent = "Enter a current code to continue. Your unsaved answers are still here."; return; }
   const next = await res.json();
   if (CONTEXT && next.boundaryContext?.token !== CONTEXT.boundaryContext?.token) CONSENT_RECONFIRM = true;
-  if (CONTEXT && (next.revision !== CONTEXT.revision || next.folder?.id !== CONTEXT.folder?.id) &&
-      !confirm(`The submission destination is now ${next.folder?.name || "closed"}. Keep your entered availability and use this destination?`)) return;
-  CONTEXT = next; CONFIG = next.config; LOAD_REVISION++;
-  $("submitBtn").disabled = !next.folder;
+  CONTEXT = next; CONFIG = next.config; CSRF = next.csrf || null;
   renderGrid();
 }
 
@@ -359,15 +339,30 @@ async function refreshContext() {
     updateConsent();
     $("submitBtn").focus();
   };
-  await refreshContext();
-  await loadRoster();
+  $("unlockBtn").onclick = () => unlock();
+  $("collectionCode").onkeydown = event => { if (event.key === "Enter") unlock(); };
+  $("newSheetBtn").onclick = () => {
+    SAVED = false; REQUEST_ID = LAST_PAYLOAD = null; $("newSheetBtn").hidden = true;
+    state = {}; $("nameInput").value = ""; $("commentInput").value = ""; resetConsent(); updateCommentCount(); renderGrid();
+    $("nameInput").focus();
+  };
+  window.addEventListener("hashchange", async () => {
+    const token = new URLSearchParams(location.hash.slice(1)).get("edit");
+    if (token) { history.replaceState(null, "", location.pathname); await unlock(token); }
+  });
+  const editToken = new URLSearchParams(location.hash.slice(1)).get("edit");
+  if (editToken) { history.replaceState(null, "", location.pathname); await unlock(editToken); }
+  else {
+    const res = await fetch("/api/collection/context");
+    if (res.ok) useContext(await res.json());
+    else await refreshContext();
+  }
   renderGrid();
   bindGrid();
 
   document.querySelectorAll(".paint-mode").forEach((b) => {
     b.onclick = () => setMode(b.dataset.mode);
   });
-  $("loadBtn").onclick = () => loadPrevious(false);
   $("submitBtn").onclick = submitAvailability;
   $("clearAllBtn").onclick = () => {
     if (!Object.keys(state).length || confirm("Clear every hour you've marked?")) {
@@ -387,7 +382,6 @@ async function refreshContext() {
     }
     renderGrid();
   };
-  // Look up their record as soon as they've picked a name.
+  // A new name starts a new set of consent choices.
   $("nameInput").addEventListener("input", () => { LOAD_REVISION++; resetConsent(); updateConsent(); });
-  $("nameInput").addEventListener("change", () => loadPrevious(true));
 })();

@@ -122,6 +122,7 @@ function isClosed(day, h, cfg = CONFIG) {
 
 // ---------------- auth ----------------
 function clearSession() {
+  clearCollectionView();
   PERMISSION_DRAFTS.clear();
   STAFFING_PLAN = null; PLAN_REQUEST++; PLAN_STATUS = ""; EMPLOYEE_DRAFTS.clear();
   $("diagnosticsStaffingPlan").innerHTML = $("employeesStaffingPlan").innerHTML = "";
@@ -171,7 +172,8 @@ function setupTabs() {
       document.querySelectorAll("#appArea > section").forEach((s) => (s.style.display = "none"));
       $(`tab-${btn.dataset.tab}`).style.display = "block";
       if (btn.dataset.tab === "employees") renderEmployees();
-      if (btn.dataset.tab === "overview") renderOverview();
+      if (btn.dataset.tab === "overview") { renderOverview(); renderIntake(); }
+      if (btn.dataset.tab === "codes") renderCodes();
       if (btn.dataset.tab === "weekend") renderWeekendUI();
     };
   });
@@ -377,7 +379,7 @@ async function saveSettings() {
 }
 
 // ---------------- submissions ----------------
-async function renderOverview(reset = false) { await renderFolderOverview(reset); }
+async function renderOverview(reset = false) { await renderFolderOverview(reset); await renderIntake(); }
 
 // ---------------- diagnostics ----------------
 function heatTable(title, valueFor, classFor, legend) {
@@ -739,8 +741,8 @@ async function downloadExcel() {
 
 // ---------------- boot ----------------
 async function bootApp() {
-  CONFIG = await fetch("/api/config").then((res) => res.json());
-  if (!TOKEN) return;
+  CONFIG = await apiGet("/api/config");
+  if (!TOKEN || !CONFIG) return;
   renderSettings();
   await loadFolders();
 }

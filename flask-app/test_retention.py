@@ -39,7 +39,7 @@ class RetentionTests:
             response = self.client.get('/api/submission-context')
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json['folder']['id'], folder_id)
-            self.client.get('/api/roster')
+            self.client.get('/api/submission-context')
             self.assertEqual(cleanup.call_count, 1)
         with db.connection_context():
             self.assertEqual(FolderAvailability.select().count(), 0)
@@ -52,10 +52,10 @@ class RetentionTests:
             SavedSchedule.create(folder=folder_id, created_at=OLD, snapshot_json='{}')
         with self.request_cleanup(), patch.object(SavedSchedule, 'delete', side_effect=RuntimeError('private payload')):
             with self.assertLogs(web.app.logger, level='WARNING') as logs:
-                response = self.client.get('/api/roster')
+                response = self.client.get('/api/submission-context')
             self.assertEqual(response.status_code, 200)
             self.assertNotIn('private payload', ''.join(logs.output))
-            self.assertEqual(self.client.get('/api/roster').status_code, 200)
+            self.assertEqual(self.client.get('/api/submission-context').status_code, 200)
         with db.connection_context():
             self.assertEqual(FolderAvailability.select().count(), 1)
             self.assertEqual(SavedSchedule.select().count(), 1)
@@ -69,18 +69,18 @@ class RetentionTests:
             self.client.get('/healthz')
             self.client.get('/')
             self.assertEqual(cleanup.call_count, 0)
-            self.client.get('/api/roster')
+            self.client.get('/api/submission-context')
             clock.return_value = 159
-            self.client.get('/api/roster')
+            self.client.get('/api/submission-context')
             self.assertEqual(cleanup.call_count, 1)
             clock.return_value = 160
             cleanup.return_value = {'backlogRemaining': False}
-            self.client.get('/api/roster')
+            self.client.get('/api/submission-context')
             clock.return_value = 161
-            self.client.get('/api/roster')
+            self.client.get('/api/submission-context')
             self.assertEqual(cleanup.call_count, 2)
             clock.return_value = 86560
-            self.client.get('/api/roster')
+            self.client.get('/api/submission-context')
             self.assertEqual(cleanup.call_count, 3)
 
     def test_retention_restores_connection_timeouts(self):
@@ -117,7 +117,10 @@ class RetentionTests:
 
     def retention_fixture(self):
         folder_id = self.context()['folder']['id']
-        self.submit('Old', comment='Sensitive fixture')
+        # Legacy accepted rows predate collection-code intake.
+        with db.connection_context():
+            employee = Employee.create(name='Old')
+            FolderAvailability.create(employee=employee, folder=folder_id, data_json='{}', comment='Sensitive fixture')
         with db.connection_context():
             Folder.update(created_at=OLD).where(Folder.id == folder_id).execute()
             FolderAvailability.update(submitted_at=OLD).where(FolderAvailability.folder == folder_id).execute()
@@ -144,7 +147,7 @@ class RetentionTests:
             newer = Folder.create(name='Young empty', created_at=CUTOFF)
             archived = Folder.create(name='Old archived', created_at=OLD, archived=True)
         result = self.cleanup(apply=True)
-        self.assertEqual(result['deleted'], dict(availability=1, weekdaySchedules=1, weekendSchedules=1, legacyAvailability=1, folders=1))
+        self.assertEqual(result['deleted'], dict(availability=1, weekdaySchedules=1, weekendSchedules=1, legacyAvailability=1, folders=1, intakeResponses=0, collectionCodes=0))
         with db.connection_context():
             self.assertIsNotNone(Folder.get_or_none(Folder.id == folder_id))
             self.assertIsNotNone(Folder.get_or_none(Folder.id == newer.id))
@@ -181,7 +184,7 @@ class RetentionTests:
         self.retention_fixture()
         with db.connection_context():
             tables = db.get_tables()
-            before = {t: (db.get_columns(t), db.execute_sql('SELECT * FROM "' + t + '" ORDER BY id').fetchall()) for t in tables}
+            before = {t: (db.get_columns(t), db.execute_sql('SELECT * FROM "' + t + '" ORDER BY 1').fetchall()) for t in tables}
         result = self.cleanup()
         self.assertEqual(result['candidates']['folders'], 1)
         self.assertEqual(sum(result['deleted'].values()), 0)
@@ -189,7 +192,7 @@ class RetentionTests:
             self.assertEqual(db.get_tables(), tables)
             for t, (columns, rows) in before.items():
                 self.assertEqual(db.get_columns(t), columns)
-                self.assertEqual(db.execute_sql('SELECT * FROM "' + t + '" ORDER BY id').fetchall(), rows)
+                self.assertEqual(db.execute_sql('SELECT * FROM "' + t + '" ORDER BY 1').fetchall(), rows)
 
     def test_retention_active_folder_restart_and_stale_preview(self):
         folder_id = self.retention_fixture()

@@ -15,17 +15,22 @@
 <main>
   <div class="card">
     <p class="hint">Saturday and Sunday are saved for reference. The generator still schedules weekdays only.</p></div>
+  <div class="card" id="codeGate">
+    <h2>Enter your collection code</h2>
+    <label for="collectionCode">Code from your supervisor</label>
+    <input id="collectionCode" autocomplete="off" autocapitalize="characters" maxlength="40" placeholder="ABCD-EFGH-JKLM">
+    <button id="unlockBtn">Continue</button>
+    <p id="codeGateMsg" role="status"></p>
+    <p class="hint">No account needed. Each code allows up to 30 responses total.</p>
+  </div>
+  <div id="availabilityForm" hidden>
   <div class="card">
     <h2>Who are you?</h2>
-    <input type="text" id="nameInput" list="rosterList" placeholder="First and last name"
-           autocomplete="off" autocapitalize="words">
-    <datalist id="rosterList"></datalist>
-    <p class="hint">Pick your name from the list so your submission updates instead of
-      creating a second copy of you.</p>
-    <div class="row" style="margin-top:10px;">
-      <button id="loadBtn" class="secondary">Load my last submission</button>
-    </div>
-    <div id="whoMsg"></div>
+    <label for="nameInput">First and last name</label>
+    <input type="text" id="nameInput" placeholder="First and last name" maxlength="100"
+           autocomplete="name" autocapitalize="words">
+    <p class="hint">Your supervisor reviews each response. Submitting again creates a new sheet; it does not replace your earlier answers.</p>
+    <p id="collectionDestination" role="status"></p>
   </div>
 
   <div class="card">
@@ -78,10 +83,13 @@
     </div>
   </div>
   <div class="card"><label for="commentInput">Comments (optional)</label>
+    <p class="hint">Please do not include medical details or other sensitive personal information.</p>
     <textarea id="commentInput" rows="2" aria-describedby="commentCount"></textarea>
     <p id="commentCount" role="status">0 / 99 characters</p></div>
   <div id="msgArea" role="status"></div>
   <button id="submitBtn">Submit availability</button>
+  <button id="newSheetBtn" class="secondary" hidden>Submit another sheet</button>
+  </div>
 </main>
 
 <script src="js/employee.js"></script>

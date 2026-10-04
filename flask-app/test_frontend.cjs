@@ -16,7 +16,7 @@ test('boundary controls count complete blocks, preserve choices, reconfirm confl
   let sends=0, captured, resolveSend;
   const reply=(data,status=200)=>({ok:status===200,status,json:async()=>structuredClone(data)});
   dom.window.fetch=async(url,opts)=>{
-    if(url==='/api/submission-context')return reply(ctx);
+    if(url==='/api/submission-context' || url==='/api/collection/context')return reply({...ctx,unlocked:true,csrf:'fixture-csrf'});
     if(url==='/api/roster')return reply({names:['Alex']});
     if(opts?.method==='POST'){sends++;captured=JSON.parse(opts.body);return new Promise(r=>resolveSend=r);}
     return reply({found:true,employee:{id:1},availability:{Mon_07:2,Mon_08:2},comment:'reload',consent:{allowExtraOpenings:true,allowExtraClosings:false,reconfirmationNeeded:true}});
@@ -33,7 +33,7 @@ test('boundary controls count complete blocks, preserve choices, reconfirm confl
   assert.equal(el('allowExtraOpenings').checked,true);assert.equal(el('allowExtraOpenings').disabled,false);
   assert.match(el('openingConsentNote').textContent,/no qualifying preferred block currently/i);
   el('allowExtraOpenings').click();assert.equal(el('allowExtraOpenings').disabled,true);
-  el('nameInput').value='Alex';await run('loadPrevious(true)');
+  el('nameInput').value='Alex';await run(`useContext({...CONTEXT,unlocked:true,csrf:'fixture-csrf',edit:{name:'Alex',availability:{Mon_07:2,Mon_08:2},comment:'reload',consent:{allowExtraOpenings:true,allowExtraClosings:false,reconfirmationNeeded:true}}})`);
   assert.equal(el('allowExtraOpenings').checked,true);assert.equal(el('submitBtn').disabled,true);
   el('reconfirmConsent').click();assert.equal(el('submitBtn').disabled,false);
   el('commentInput').value='draft';const pending=run('submitAvailability()');await run('submitAvailability()');
@@ -61,7 +61,7 @@ test('consent visibility uses individual complete-block caps and preserves hidde
   let ctx={folder:{id:1},revision:1,config:{...config,minShiftLength:3,hourEnd:21},boundaryContext:{token:'original',enabled:false,caps:{openings:2,closings:1,combined:2},
     blocks:Object.fromEntries(days.map(d=>[d,{opening:[7,8,9],closing:[19,20,21],closingRequired:[19,20,21]}]))}};
   let captured;
-  dom.window.fetch=async(url,opts)=>({ok:true,json:async()=>structuredClone(url==='/api/submission-context'?ctx:
+  dom.window.fetch=async(url,opts)=>({ok:true,json:async()=>structuredClone((url==='/api/submission-context'||url==='/api/collection/context')?{...ctx,unlocked:true,csrf:'fixture-csrf'}:
     url==='/api/roster'?{names:[]}:(captured=JSON.parse(opts.body),{availableHours:0,preferredHours:0}))});
   await run(fs.readFileSync(__dirname+'/public/js/employee.js','utf8'));
   const setBlocks=(o,c)=> {
@@ -86,7 +86,7 @@ test('consent visibility uses individual complete-block caps and preserves hidde
   await run('refreshContext()');assert.equal(el('boundaryChoices').hidden,true);
   assert.equal(el('reconfirmConsent').hidden,false);assert.equal(el('reconfirmConsent').closest('#boundaryChoices'),null);
   assert.equal(el('submitBtn').disabled,true);assert.equal(el('allowExtraOpenings').checked,true);
-  el('reconfirmConsent').click();assert.equal(el('submitBtn').disabled,false);
+  run('SAVED=false');el('reconfirmConsent').click();assert.equal(el('submitBtn').disabled,false);
   setBlocks(1,0);assert.equal(el('boundaryChoices').hidden,false);
   setBlocks(0,1);assert.equal(el('boundaryChoices').hidden,false);
   // A longer minimum changes the server's blocks. Available padding suffices for closing.
@@ -269,7 +269,8 @@ async function admin() {
   const dom = new JSDOM(fs.readFileSync(__dirname+'/public/admin.html','utf8'),{url:'http://localhost/admin.html',runScripts:'outside-only'});
   const ctx = dom.getInternalVMContext(), run = code => vm.runInContext(code,ctx);
   dom.window.fetch = async () => ({ok:true,status:200,json:async()=>structuredClone(overview)});
-  for(const f of ['folders.js','admin.js']) run(fs.readFileSync(__dirname+'/public/js/'+f,'utf8'));
+  for(const f of ['folders.js','collection-codes.js','admin.js']) run(fs.readFileSync(__dirname+'/public/js/'+f,'utf8'));
+  run('renderIntake=async()=>{};renderCodes=async()=>{}');
   run(`TOKEN='test'; CONFIG=${JSON.stringify(config)}; FOLDER_ID=1;`);
   await run('renderOverview(true)');
   return {dom,run,doc:dom.window.document};
@@ -478,7 +479,7 @@ test('employee saves preferences and comments to displayed folder and retains fa
   dom.window.confirm=()=>true;
   let captured;
   dom.window.fetch=async(url,opts)=>{
-    if(url==='/api/submission-context')return {ok:true,json:async()=>({folder:{id:4,name:'Fall'},revision:2,config})};
+    if(url==='/api/submission-context' || url==='/api/collection/context')return {ok:true,json:async()=>({folder:{id:4,name:'Fall'},revision:2,config,unlocked:true,csrf:'fixture-csrf'})};
     if(url==='/api/roster')return {ok:true,json:async()=>({names:[],allowSelfRegister:true})};
     captured=JSON.parse(opts.body);return {ok:false,json:async()=>({error:'Please retry'})};
   };
@@ -533,7 +534,7 @@ test('deletion dialog shows escaped exact name, counts, preservation, active war
   await doc.getElementById('deleteFolderBtn').onclick();
   const details=doc.getElementById('deleteFolderDetails');
   assert.match(details.textContent,/Fall <2026>/); assert.equal(details.querySelector('strong').textContent,'Fall <2026>'); assert.ok(details.innerHTML.includes('&lt;2026&gt;'));
-  for(const text of ['3 availability','2 saved weekday','4 saved weekend','cannot be undone','roster entries','other folders','stops submissions','No other folder will be activated'])assert.ok(details.textContent.includes(text));
+  for(const text of ['3 accepted availability','2 saved weekday','4 saved weekend','cannot be undone','roster entries','other folders','stops submissions','No other folder will be activated'])assert.ok(details.textContent.includes(text));
   const input=doc.getElementById('deleteFolderConfirmation'),button=doc.getElementById('deleteFolderConfirmBtn');
   input.value='fall <2026>';input.oninput();assert.equal(button.disabled,true);
   input.value='Fall <2026> ';input.oninput();assert.equal(button.disabled,true);

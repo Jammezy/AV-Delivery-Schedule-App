@@ -36,6 +36,7 @@ function renderFolderControls() {
   $("folderStatus").textContent = active ? `Accepting submissions: ${active.name}` : "No folder is accepting submissions.";
 }
 function clearFolderView() {
+  if (typeof clearCollectionView === "function") clearCollectionView();
   PERMISSION_DRAFTS.clear();
   VIEW_REVISION++;
   PINNED = PREVIEWED = null;
@@ -71,6 +72,8 @@ async function changeFolder() {
   await loadSavedSchedules();
   if (revision !== VIEW_REVISION) return;
   await renderSavedWeekendSchedules();
+  if (revision !== VIEW_REVISION) return;
+  await renderCodes();
 }
 // Supervisor collection windows are independent of weekday staffing settings.
 const SUPERVISOR_AVAILABILITY_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -482,7 +485,8 @@ async function openFolderDeletion() {
   DELETION_PREVIEW = preview;
   const c = preview.counts;
   $("deleteFolderDetails").innerHTML = `<p>Folder: <strong>${escapeHtml(preview.folder.name)}</strong></p>
-    <ul><li>${c.availabilitySubmissions} availability submissions, including comments and submission timestamps</li>
+    <ul><li>${c.unverifiedResponses || 0} intake responses and ${c.collectionCodes || 0} collection codes</li>
+    <li>${c.availabilitySubmissions} accepted availability submissions, including comments and submission timestamps</li>
     <li>${c.weekdaySchedules} saved weekday schedules (Monday–Friday)</li>
     <li>${c.weekendSchedules} saved weekend schedules (Friday evening–Sunday)</li></ul>
     <p>Deletion is permanent and cannot be undone through the app.</p>

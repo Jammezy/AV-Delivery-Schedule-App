@@ -44,6 +44,7 @@
       <button data-tab="weekend">Weekend</button>
       <button data-tab="employees">Employees</button>
       <button data-tab="overview">Submissions</button>
+      <button data-tab="codes">Codes</button>
       <button data-tab="settings">Settings</button>
     </div>
 
@@ -140,8 +141,7 @@
     <section id="tab-employees" class="card" style="display:none;">
       <h2>Employee roster</h2>
       <div id="employeesStaffingPlan" class="staffing-plan" role="status" aria-live="polite"></div>
-      <p class="hint">Set who's a lead and their weekly hour targets. People are added
-        automatically the first time they submit, unless you turn that off in Settings.</p>
+      <p class="hint">Set who's a lead and their weekly hour targets. Add employees here before accepting their responses. New names never automatically expand the roster.</p>
       <div class="row" style="margin-bottom:12px;">
         <input type="text" id="newEmpName" placeholder="Add someone by name" style="max-width:260px;">
         <button id="addEmpBtn" class="secondary">Add</button>
@@ -150,7 +150,12 @@
     </section>
 
     <section id="tab-overview" class="card" style="display:none;">
-      <h2>Who's submitted</h2>
+      <h2>Review responses</h2>
+      <p class="hint">Shared codes allow responses without verifying identity. Review the name and answers, then choose which sheet to use. Only accepted sheets go to the generator.</p>
+      <button id="refreshIntakeBtn" class="secondary">Refresh responses</button>
+      <p id="intakeMsg" role="status"></p>
+      <div id="intakeArea"></div>
+      <h2>Accepted availability</h2>
       <div id="overviewArea"></div>
 
       <div id="editAvailabilityModal" class="card" style="display:none; position:fixed; top:5%; left:5%; right:5%; bottom:5%; z-index:1000; overflow-y:auto; box-shadow:0 8px 24px rgba(0,0,0,0.3); background:white;">
@@ -188,6 +193,30 @@
       <div id="editAvailabilityOverlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:999;"></div>
     </section>
 
+    <section id="tab-codes" class="card" style="display:none;">
+      <h2>Codes</h2>
+      <p class="hint">Each code allows 30 responses total. Create another code to allow another 30. Everyone uses the same employee-form link.</p>
+      <p id="codesCollectionStatus" role="status"></p>
+      <div class="row">
+        <label>Label (optional)<input id="codeLabel" maxlength="100" placeholder="Team invitation"></label>
+        <label>Expires (optional)<input id="codeExpiry" type="datetime-local"></label>
+        <button id="createCodeBtn">Create code</button>
+      </div>
+      <div class="row">
+        <button id="openCodeCollectionBtn" class="secondary">Open collection</button>
+        <button id="closeCodeCollectionBtn" class="secondary">Close collection</button>
+        <button id="refreshCodesBtn" class="secondary">Refresh codes</button>
+        <label><input id="showDeletedCodes" type="checkbox"> Show deleted</label>
+      </div>
+      <p id="codesMsg" role="status"></p>
+      <div id="codesTable" class="scroll-x"></div>
+      <details><summary>Collection response limit</summary>
+        <p>Independent of the 30-response limit per code. Raise this only if the period needs more responses.</p>
+        <label>Maximum responses this period <input id="collectionResponseCap" type="number" min="30" max="10000" step="1"></label>
+        <button id="saveCollectionCapBtn" class="secondary">Save limit</button>
+      </details>
+    </section>
+
     <section id="tab-settings" class="card" style="display:none;">
       <h2>Scheduling rules</h2>
       <div id="settingsForm"></div>
@@ -209,6 +238,7 @@
   </div>
 </dialog>
 <script src="js/folders.js"></script>
+<script src="js/collection-codes.js"></script>
 <script src="js/admin.js"></script>
 </body>
 </html>
