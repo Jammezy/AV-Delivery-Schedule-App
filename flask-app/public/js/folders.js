@@ -28,6 +28,14 @@ function clearResult() {
 function renderFolderControls() {
   $("folderSelect").innerHTML = FOLDERS.length ? FOLDERS.map(f => `<option value="${f.id}" ${f.id === FOLDER_ID ? "selected" : ""}>${escapeHtml(f.name)}${f.archived ? " (archived)" : ""}</option>`).join("") : '<option value="">No folders yet</option>';
   $("folderSelect").disabled = !FOLDERS.length;
+  if ($("codesFolderSelect")) {
+    $("codesFolderSelect").innerHTML = $("folderSelect").innerHTML;
+    $("codesFolderSelect").disabled = !FOLDERS.length || DELETION_BUSY;
+    const archived = FOLDERS.find(f => f.id === FOLDER_ID)?.archived;
+    $("createCodeBtn").disabled = !FOLDER_ID || archived || DELETION_BUSY;
+    $("openCodeCollectionBtn").disabled = !FOLDER_ID || archived || DELETION_BUSY;
+    $("closeCodeCollectionBtn").disabled = !FOLDER_ID || ACTIVE_FOLDER !== FOLDER_ID || DELETION_BUSY;
+  }
   for (const id of ["renameFolderBtn", "activateFolderBtn", "stopFolderBtn", "archiveFolderBtn", "deleteFolderBtn", "generateBtn", "regenerateBtn", "wkndGenerateBtn"]) {
     $(id).disabled = !FOLDER_ID || DELETION_BUSY;
   }

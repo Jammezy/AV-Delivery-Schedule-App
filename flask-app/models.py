@@ -113,7 +113,7 @@ class AdminSession(BaseModel):
 
 class CollectionSettings(BaseModel):
     folder = ForeignKeyField(Folder, unique=True, on_delete="CASCADE")
-    response_cap = IntegerField(default=300)
+    response_cap = IntegerField(default=100)
     received = IntegerField(default=0)
 
 

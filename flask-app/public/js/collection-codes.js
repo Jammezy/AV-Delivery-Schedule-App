@@ -2,7 +2,9 @@
 let CODE_ROWS = [], INTAKE_ROWS = [], INTAKE_EMPLOYEES = [], CODES_REQUEST = 0, INTAKE_REQUEST = 0;
 function clearCollectionView() {
   CODE_ROWS = []; INTAKE_ROWS = []; INTAKE_EMPLOYEES = []; CODES_REQUEST++; INTAKE_REQUEST++;
-  for (const id of ['codesTable','codesMsg','codesCollectionStatus','intakeArea','intakeMsg']) document.getElementById(id).textContent = '';
+  for (const id of ['codesTable','codesMsg','codesCollectionStatus','folderLimitName','intakeArea','intakeMsg']) document.getElementById(id).textContent = '';
+  $('collectionResponseCap').value = '';
+  $('collectionResponseCap').disabled = $('saveCollectionCapBtn').disabled = true;
 }
 async function copyCollectionText(text) {
   try { await navigator.clipboard.writeText(text); return true; }
@@ -15,12 +17,16 @@ async function renderCodes() {
   const data = await apiGet(`/api/admin/codes?${folderQuery()}&showDeleted=${$('showDeletedCodes').checked ? 1 : 0}`);
   if (!data || !Array.isArray(data.codes) || !data.collection || requestId !== CODES_REQUEST || revision !== VIEW_REVISION) return;
   CODE_ROWS = data.codes;
+  $('collectionResponseCap').disabled = $('saveCollectionCapBtn').disabled = false;
   $('collectionResponseCap').value = data.collection.responseCap;
-  $('codesCollectionStatus').textContent = `${FOLDERS.find(f=>f.id===FOLDER_ID)?.name || 'Collection'}: ${ACTIVE_FOLDER===FOLDER_ID ? 'Open' : 'Closed'} · ${data.collection.received} responses received · Period limit ${data.collection.responseCap}`;
-  $('codesTable').innerHTML = CODE_ROWS.length ? `<table class="data-table"><thead><tr><th>Code / label</th><th>Collection</th><th>Created / expires</th><th>Received</th><th>Remaining</th><th>Status</th><th>Actions</th></tr></thead><tbody>${CODE_ROWS.map(c=>`<tr>
+  const folder = FOLDERS.find(f=>f.id===FOLDER_ID), folderName = folder?.name || 'Selected folder';
+  const full = data.collection.received >= data.collection.responseCap;
+  $('codesCollectionStatus').textContent = `${folderName}: ${folder?.archived ? 'Archived — restore before creating codes' : ACTIVE_FOLDER===FOLDER_ID ? 'Open for submissions' : 'Closed for submissions'} · ${data.collection.received} total submissions received · Folder limit ${data.collection.responseCap}${full ? '. This folder has reached its total submission limit. Increase the folder limit to accept more submissions.' : ''}`;
+  $('folderLimitName').textContent = `${folderName}: ${data.collection.received} of ${data.collection.responseCap} total submissions received.`;
+  $('codesTable').innerHTML = CODE_ROWS.length ? `<table class="data-table"><thead><tr><th>Code / label</th><th>Folder</th><th>Created / expires</th><th>Received</th><th>Remaining</th><th>Status</th><th>Actions</th></tr></thead><tbody>${CODE_ROWS.map(c=>`<tr>
     <td><strong>${escapeHtml(c.code)}</strong><br>${escapeHtml(c.label)}</td><td>${escapeHtml(c.folderName)}</td>
     <td>${escapeHtml(new Date(c.createdAt).toLocaleString())}<br>${c.expiresAt ? escapeHtml(new Date(c.expiresAt).toLocaleString()) : 'No expiry'}</td>
-    <td>${c.received} / ${c.responseLimit}</td><td>${c.remaining}</td><td>${escapeHtml(c.status)}${c.status !== 'Active' ? '<br>Not accepting responses' : ''}</td>
+    <td>${c.received} / ${c.responseLimit}</td><td>${c.remaining}</td><td>${escapeHtml({'Collection closed':'Folder closed','Collection paused':'Folder limit reached'}[c.status] || c.status)}${c.status !== 'Active' ? '<br>Not accepting responses' : ''}</td>
     <td><button class="secondary" data-copycode="${c.id}">Copy code</button> <button class="secondary" data-invitecode="${c.id}">Copy invitation</button>
     ${!['Revoked','Deleted'].includes(c.status) && c.responseLimit < 10000 ? `<div><label for="extraResponses-${c.id}">Additional responses</label> <input id="extraResponses-${c.id}" type="number" min="1" max="${10000-c.responseLimit}" step="1" value="1" style="width:6rem"> <button class="secondary" data-addresponses="${c.id}">Add responses</button></div>` : ''}
     ${!['Revoked','Deleted'].includes(c.status) ? `<button class="secondary" data-revokecode="${c.id}">Revoke</button>` : ''}
@@ -38,7 +44,7 @@ async function renderCodes() {
     const r = await apiSend(`/api/admin/codes/${id}/responses`, 'POST', {additionalResponses:Number(input.value)});
     if (!r) return;
     if (!r.ok) { $('codesMsg').textContent = r.data.error; button.disabled = false; return; }
-    const pause = r.data.status === 'Collection paused' ? ' The collection period is full; raise its separate limit below to accept more responses.' : '';
+    const pause = r.data.status === 'Collection paused' ? ' This folder has reached its total submission limit. Increase the folder limit to accept more submissions.' : '';
     $('codesMsg').textContent = `Responses added. This code now allows ${r.data.responseLimit} total, with ${r.data.remaining} remaining.${pause}`;
     await renderCodes();
   };
@@ -98,14 +104,18 @@ async function renderIntake() {
   };
 }
 function bindCollectionControls() {
+  $('codesFolderSelect').onchange = async () => {
+    $('folderSelect').value = $('codesFolderSelect').value;
+    await changeFolder();
+  };
   $('createCodeBtn').onclick = async () => {
     if (!FOLDER_ID) { $('codesMsg').textContent='Create or select a folder first.'; return; }
     $('createCodeBtn').disabled=true;
     const expiry = $('codeExpiry').value;
     const r = await apiSend('/api/admin/codes','POST',{folderId:FOLDER_ID,label:$('codeLabel').value,expiresAt:expiry ? new Date(expiry).toISOString() : null});
-    $('createCodeBtn').disabled=false;
+    $('createCodeBtn').disabled=!FOLDER_ID || FOLDERS.find(f=>f.id===FOLDER_ID)?.archived;
     if (!r) return;
-    $('codesMsg').textContent = r.ok ? 'Code created: 30 responses available. Existing codes are unchanged.' : r.data.error;
+    $('codesMsg').textContent = r.ok ? `Code created for ${r.data.folderName}: 30 responses available.${r.data.status !== 'Active' ? ' This folder is not accepting submissions through this code yet; check its status below.' : ''}` : r.data.error;
     if (r.ok) { $('codeLabel').value=''; await renderCodes(); }
   };
   $('refreshCodesBtn').onclick = renderCodes; $('showDeletedCodes').onchange = renderCodes;
@@ -118,7 +128,7 @@ function bindCollectionControls() {
   $('saveCollectionCapBtn').onclick = async () => {
     const r = await apiSend(`/api/admin/collections/${FOLDER_ID}`,'PUT',{responseCap:Number($('collectionResponseCap').value)});
     if (!r) return;
-    $('codesMsg').textContent=r.ok ? 'Collection limit saved. Individual code limits are unchanged.' : r.data.error;
+    $('codesMsg').textContent=r.ok ? 'Folder limit saved. Individual code limits are unchanged.' : r.data.error;
     if (r.ok) await renderCodes();
   };
 }

@@ -30,7 +30,7 @@ class CollectionTests(unittest.TestCase):
   self.admin={'Authorization':'Bearer '+token};self.ctx=self.client.get('/api/submission-context').json;self.fid=self.ctx['folder']['id']
  def tearDown(self):db.close();self.tmp.cleanup()
  def code(self,**kw):
-  r=self.client.post('/api/admin/codes',headers=self.admin,json=dict(folderId=self.fid,**kw));self.assertEqual(r.status_code,201,r.json);return r.json
+  r=self.client.post('/api/admin/codes',headers=self.admin,json=dict({'folderId':self.fid},**kw));self.assertEqual(r.status_code,201,r.json);return r.json
  def unlock(self,code,c=None):
   r=(c or self.client).post('/api/collection/unlock',json={'code':code['code']});self.assertEqual(r.status_code,200,r.json);return {'X-Submission-CSRF':r.json['csrf']}
  def submit(self,h,c=None,**kw):
@@ -40,6 +40,42 @@ class CollectionTests(unittest.TestCase):
  def accept(self,row,eid,version=None):return self.client.post(f'/api/admin/intake/{row["id"]}/review',headers=self.admin,json=dict(action='accept',employeeId=eid,reviewVersion=row['reviewVersion'],acceptedVersion=version))
  def add_responses(self,code,amount,client=None,headers=None):
   return (client or self.client).post(f'/api/admin/codes/{code["id"]}/responses',headers=self.admin if headers is None else headers,json={'additionalResponses':amount})
+ def test_folder_defaults_and_saved_limits_survive_restart(self):
+  with db.connection_context():CollectionSettings.create(folder=self.fid,response_cap=300,received=12)
+  new=self.client.post('/api/folders',headers=self.admin,json={'name':'Next week','activate':False}).json
+  listed=self.client.get(f'/api/admin/codes?folderId={new["id"]}',headers=self.admin).json
+  self.assertEqual(listed['collection'],{'received':0,'responseCap':100});self.assertEqual(listed['codes'],[])
+  init_db()
+  with db.connection_context():
+   self.assertEqual(CollectionSettings.get(CollectionSettings.folder==self.fid).response_cap,300)
+   self.assertEqual(CollectionSettings.get(CollectionSettings.folder==self.fid).received,12)
+   self.assertEqual(CollectionSettings.get(CollectionSettings.folder==new['id']).response_cap,100)
+ def test_folder_filtering_destination_and_live_code_allowance(self):
+  one=self.code();h=self.unlock(one);self.add_responses(one,2)
+  context=self.client.get('/api/collection/context').json
+  self.assertEqual(context['responseLimit'],32);self.assertEqual(context['folder']['id'],self.fid)
+  folder=self.client.post('/api/folders',headers=self.admin,json={'name':'Other folder','activate':False}).json
+  two=self.code(folderId=folder['id']);self.assertEqual(two['status'],'Collection closed')
+  other=self.client.get(f'/api/admin/codes?folderId={folder["id"]}',headers=self.admin).json
+  self.assertEqual([c['id'] for c in other['codes']],[two['id']]);self.assertEqual(other['collection']['responseCap'],100)
+  self.assertEqual(self.client.get('/api/submission-context').json['folder']['id'],self.fid)
+  self.assertEqual(self.submit(h,folderId=folder['id']).status_code,409)
+  self.assertEqual(self.submit(h).status_code,200)
+  self.client.patch(f'/api/folders/{folder["id"]}',headers=self.admin,json={'activate':True})
+  self.assertEqual(self.submit(h).status_code,409)
+  second_context=self.client.post('/api/collection/unlock',json={'code':two['code']}).json
+  self.assertEqual(second_context['folder']['id'],folder['id']);self.assertEqual(second_context['responseLimit'],30)
+  self.assertEqual(self.submit({'X-Submission-CSRF':second_context['csrf']},folderId=folder['id'],revision=second_context['revision']).status_code,200)
+  with db.connection_context():
+   self.assertEqual([(r.folder_id,r.code_id) for r in IntakeSubmission.select().order_by(IntakeSubmission.id)],[(self.fid,one['id']),(folder['id'],two['id'])])
+ def test_default_folder_cap_across_multiple_codes(self):
+  one=self.code();two=self.code();self.add_responses(one,60);self.add_responses(two,10)
+  h=self.unlock(one)
+  for _ in range(90):self.assertEqual(self.submit(h).status_code,200)
+  h=self.unlock(two)
+  for _ in range(10):self.assertEqual(self.submit(h).status_code,200)
+  blocked=self.submit(h);self.assertEqual(blocked.status_code,409);self.assertIn('folder has reached its total submission limit',blocked.json['error'])
+  with db.connection_context():self.assertEqual(CollectionSettings.get().received,100)
  def test_add_responses_to_exhausted_code(self):
   one=self.code();two=self.code();self.assertEqual(one['responseLimit'],30);h=self.unlock(one)
   for _ in range(30):self.assertEqual(self.submit(h).status_code,200)

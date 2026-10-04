@@ -36,14 +36,14 @@ test('boundary controls count complete blocks, preserve choices, reconfirm confl
   el('nameInput').value='Alex';await run(`useContext({...CONTEXT,unlocked:true,csrf:'fixture-csrf',edit:{name:'Alex',availability:{Mon_07:2,Mon_08:2},comment:'reload',consent:{allowExtraOpenings:true,allowExtraClosings:false,reconfirmationNeeded:true}}})`);
   assert.equal(el('allowExtraOpenings').checked,true);assert.equal(el('submitBtn').disabled,true);
   el('reconfirmConsent').click();assert.equal(el('submitBtn').disabled,false);
-  el('commentInput').value='draft';const pending=run('submitAvailability()');await run('submitAvailability()');
+  el('commentInput').value='draft';const pending=run('submitAvailability()');await run('submitAvailability()');await new Promise(r=>setImmediate(r));
   assert.equal(sends,1);assert.equal(captured.allowExtraOpenings,true);assert.equal(captured.allowExtraClosings,false);assert.equal(captured.consentContext,'one');
   ctx.boundaryContext.token='two';ctx.boundaryContext.caps.openings=0;
   resolveSend(reply({error:'Settings changed'},409));await pending;
   assert.equal(el('commentInput').value,'draft');assert.equal(run('state.Mon_07'),2);
   assert.equal(el('submitBtn').disabled,true);assert.match(el('openingConsentLabel').textContent,/more than 0/);
   assert.match(el('boundaryStatus').textContent,/Reconfirmation needed/);
-  el('reconfirmConsent').click();const retry=run('submitAvailability()');resolveSend(reply({availableHours:2,preferredHours:2}));await retry;
+  el('reconfirmConsent').click();const retry=run('submitAvailability()');await new Promise(r=>setImmediate(r));resolveSend(reply({availableHours:2,preferredHours:2}));await retry;
   assert.equal(captured.consentContext,'two');assert.match(el('msgArea').textContent,/Saved/);
   el('nameInput').value='Other';el('nameInput').dispatchEvent(new dom.window.Event('input'));
   assert.equal(el('allowExtraOpenings').checked,false);

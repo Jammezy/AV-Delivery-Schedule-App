@@ -19,11 +19,33 @@ const server=spawn(python,['app.py'],{cwd:__dirname,env,stdio:'ignore'});
  await admin.waitForFunction(()=>CODE_ROWS.length===1);let code=await admin.evaluate(()=>CODE_ROWS[0]);assert.equal(code.remaining,30);
  await admin.locator(`[data-invitecode="${code.id}"]`).click();const invitation=await admin.evaluate(()=>navigator.clipboard.readText());assert.ok(invitation.includes(code.code));
  await admin.locator('#createCodeBtn').click();await admin.waitForFunction(()=>CODE_ROWS.length===2);let second=await admin.evaluate(()=>CODE_ROWS[0]);
+ // The Codes dropdown selects the same folder as the rest of the supervisor UI.
+ await admin.locator('#newFolderName').fill('Next scheduling folder');await admin.locator('#activateNewFolder').uncheck();await admin.locator('#createFolderBtn').click();
+ await admin.waitForFunction(()=>FOLDERS.some(f=>f.name==='Next scheduling folder') && FOLDER_ID!==ACTIVE_FOLDER);
+ await admin.evaluate(()=>renderCodes());const nextFolder=await admin.evaluate(()=>FOLDER_ID);
+ assert.equal(await admin.locator('#codesFolderSelect').inputValue(),String(nextFolder));assert.equal(await admin.evaluate(()=>CODE_ROWS.length),0);
+ assert.equal(await admin.locator('#collectionResponseCap').inputValue(),'100');assert.match(await admin.locator('#codesCollectionStatus').innerText(),/Closed for submissions/);
+ await admin.locator('#createCodeBtn').click();await admin.waitForFunction(()=>CODE_ROWS.length===1);const nextCode=await admin.evaluate(()=>CODE_ROWS[0]);assert.equal(nextCode.folderId,nextFolder);
+ assert.equal(await admin.evaluate(()=>ACTIVE_FOLDER),code.folderId);
+ await admin.locator('#tab-codes details').evaluate(el=>el.open=true);await admin.locator('#collectionResponseCap').fill('150');await admin.locator('#saveCollectionCapBtn').click();
+ await admin.waitForFunction(()=>document.querySelector('#codesCollectionStatus').textContent.includes('Folder limit 150'));
+ // Delay an old folder's codes response, then switch to another folder before it returns.
+ let delayedRoute,delayedReply;let releaseSeen;const seen=new Promise(r=>releaseSeen=r);
+ await admin.route(`**/api/admin/codes?folderId=${code.folderId}&*`,async route=>{delayedReply=await route.fetch();delayedRoute=route;releaseSeen();});
+ await admin.locator('#codesFolderSelect').selectOption(String(code.folderId));await seen;
+ await admin.locator('#codesFolderSelect').selectOption(String(nextFolder));await admin.waitForFunction(id=>CODE_ROWS.length===1 && CODE_ROWS[0].folderId===id,nextFolder);
+ await delayedRoute.fulfill({response:delayedReply});await admin.unroute(`**/api/admin/codes?folderId=${code.folderId}&*`);
+ await admin.evaluate(()=>renderCodes());assert.equal(await admin.evaluate(()=>CODE_ROWS[0].folderId),nextFolder);
+ await admin.locator('#codesFolderSelect').selectOption(String(code.folderId));await admin.waitForFunction(()=>CODE_ROWS.length===2);assert.equal(await admin.locator('#collectionResponseCap').inputValue(),'100');
+ assert.equal(await admin.locator('#folderSelect').inputValue(),String(code.folderId));
  assert.equal(await admin.locator('#codesTable img').count(),0);
  // 35 different people can use the same generic link with two codes; no accounts.
  const employeeContext=await browser.newContext({viewport:{width:390,height:844}}),employee=await employeeContext.newPage();employee.on('pageerror',e=>errors.push(e.message));
  await employee.goto('http://127.0.0.1:5102/');assert.equal(await employee.locator('#availabilityForm').isVisible(),false);
+ assert.match(await employee.locator('#codeGate').innerText(),/Enter the code your supervisor provided/);
+ assert.ok(!(await employee.locator('main').innerText()).includes('generator still schedules weekdays only'));
  await employee.locator('#collectionCode').fill(code.code);await employee.locator('#unlockBtn').click();await employee.locator('#availabilityForm').waitFor({state:'visible'});
+ assert.match(await employee.locator('#codeResponseAllowance').innerText(),/30 responses total/);assert.match(await employee.locator('#collectionDestination').innerText(),/Imported availability/);
  assert.equal(await employee.locator('#loadBtn').count(),0);assert.equal(await employee.locator('#rosterList').count(),0);
  await employee.locator('#nameInput').fill('Alex');await employee.locator('[data-key="Mon_07"]').focus();await employee.keyboard.press('Space');await employee.locator('#commentInput').fill('<img src=x onerror=alert(1)>');
  await employee.locator('#submitBtn').click();await employee.waitForFunction(()=>document.querySelector('#msgArea').textContent.includes('Saved'));
@@ -47,13 +69,17 @@ const server=spawn(python,['app.py'],{cwd:__dirname,env,stdio:'ignore'});
  const addedResponse=admin.waitForResponse(r=>r.url().endsWith(`/api/admin/codes/${code.id}/responses`) && r.request().method()==='POST');
  await admin.locator(`[data-addresponses="${code.id}"]`).click();const added=await addedResponse;assert.equal(added.status(),200,await added.text());assert.equal((await added.json()).responseLimit,32);
  await admin.waitForFunction(()=>CODE_ROWS.some(c=>c.responseLimit===32 && c.remaining===2 && c.status==='Active'));
+ // An already open form refreshes the allowance before sending, without losing its draft.
+ await employee.locator('#newSheetBtn').click();await employee.locator('#nameInput').fill('Fresh allowance');await employee.locator('#commentInput').fill('Keep this draft');
+ await employee.locator('#submitBtn').click();await employee.waitForFunction(()=>SAVED && CONTEXT.responseLimit===32);
+ assert.match(await employee.locator('#codeResponseAllowance').innerText(),/32 responses total/);assert.equal(await employee.locator('#commentInput').inputValue(),'Keep this draft');
  assert.equal(await admin.evaluate(id=>CODE_ROWS.find(c=>c.id===id).responseLimit,second.id),30);
- await admin.reload();await admin.locator('#appArea').waitFor({state:'visible'});await admin.locator('[data-tab="codes"]').click();
- await admin.waitForFunction(()=>CODE_ROWS.some(c=>c.responseLimit===32 && c.remaining===2));
- assert.match(await admin.locator('#codesTable').innerText(),/30 \/ 32/);
+ await admin.reload();await admin.locator('#appArea').waitFor({state:'visible'});await admin.locator('[data-tab="codes"]').click();await admin.locator('#codesFolderSelect').selectOption(String(code.folderId));
+ await admin.waitForFunction(()=>CODE_ROWS.some(c=>c.responseLimit===32 && c.remaining===1));
+ assert.match(await admin.locator('#codesTable').innerText(),/31 \/ 32/);
  await admin.locator(`[data-invitecode="${code.id}"]`).click();assert.match(await admin.evaluate(()=>navigator.clipboard.readText()),/32 responses total/);
  const extra=await employee.evaluate(async()=>{const statuses=[];for(let i=0;i<3;i++){const r=await fetch('/api/availability',{method:'POST',headers:{'Content-Type':'application/json','X-Submission-CSRF':CSRF},body:JSON.stringify({name:'Additional '+i,availability:{},comment:'',folderId:CONTEXT.folder.id,revision:CONTEXT.revision,requestId:crypto.randomUUID()})});statuses.push(r.status);}return statuses;});
- assert.deepEqual(extra,[200,200,409]);
+ assert.deepEqual(extra,[200,409,409]);
  await admin.locator('#refreshCodesBtn').click();await admin.waitForFunction(()=>CODE_ROWS.some(c=>c.responseLimit===32 && c.received===32 && c.remaining===0 && c.status==='Exhausted'));
  // Revocation stops an already unlocked session; deleting preserves received sheets.
  await employeeContext.clearCookies();await employee.goto('http://127.0.0.1:5102/');await employee.locator('#codeGate').waitFor({state:'visible'});await employee.locator('#collectionCode').fill(second.code);await employee.locator('#unlockBtn').click();await employee.locator('#availabilityForm').waitFor({state:'visible'});

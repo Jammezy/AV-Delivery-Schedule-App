@@ -100,6 +100,8 @@ def code_status(code):
 def check_code(code, allow_exhausted=False):
     status = code_status(code)
     if status != 'Active' and not (allow_exhausted and status in ('Exhausted', 'Collection paused')):
+        if status == 'Collection paused':
+            abort(409, 'This folder has reached its total submission limit. Ask your supervisor to increase the folder limit.')
         abort(409, 'This code is not accepting responses. Ask your supervisor for another code or to reopen collection.')
 
 
@@ -156,6 +158,8 @@ def public_context(session=None, token=None):
                   revision=state.revision, config={k: cfg[k] for k in PUBLIC_FIELDS if k in cfg},
                   boundaryContext=boundary_context(cfg), unlocked=bool(session))
     if session:
+        result['folder'] = dict(id=session.code.folder_id, name=session.code.folder.name)
+        result['responseLimit'] = session.code.response_limit
         result['csrf'] = csrf(token)
         if session.edit_grant_id:
             row = session.edit_grant.submission
@@ -243,7 +247,7 @@ def register(app, require_admin, permission_version, body, folder_or_404):
             check_code(code)
             settings, _ = CollectionSettings.get_or_create(folder=code.folder)
             if settings.received >= settings.response_cap:
-                abort(409, 'Collection is full. Ask your supervisor to allow more responses.')
+                abort(409, 'This folder has reached its total submission limit. Ask your supervisor to increase the folder limit.')
             row = IntakeSubmission.create(folder=code.folder, code=code, name=name, data_json=json.dumps(av), comment=comment,
                 allow_extra_openings=data.get('allowExtraOpenings', False), allow_extra_closings=data.get('allowExtraClosings', False),
                 consent_context=boundary_context(cfg)['token'] if explicit else None,
@@ -300,7 +304,7 @@ def register(app, require_admin, permission_version, body, folder_or_404):
             if folder.archived:
                 abort(409, 'Restore the folder before creating a code.')
             if CollectionCode.select().where(CollectionCode.folder == folder).count() >= 100:
-                abort(409, 'This period already has 100 codes. Start a new collection period.')
+                abort(409, 'This folder already has 100 codes. Create a new scheduling folder for more codes.')
             raw = ''.join(secrets.choice(ALPHABET) for _ in range(12))
             display = '-'.join(raw[i:i+4] for i in range(0,12,4))
             code = CollectionCode.create(folder=folder, verifier=verify_code(display),
