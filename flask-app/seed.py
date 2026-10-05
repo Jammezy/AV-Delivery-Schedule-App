@@ -1,15 +1,19 @@
 """Populate a demo database so the app can be exercised locally."""
 import random, json
-from models import init_db, Employee, Availability, db
+from models import init_db, Employee, FolderAvailability, SubmissionState, db
 init_db()
 db.connect(reuse_if_open=True)
-Employee.delete().execute(); Availability.delete().execute()
+if Employee.select().exists():
+    raise RuntimeError('Demo seeding requires an empty employee database; existing records were not changed.')
+folder_id = SubmissionState.get_by_id(1).active_folder_id
+if folder_id is None:
+    raise RuntimeError('Create and activate a demo folder before seeding.')
 rng = random.Random(7)
 DAYS = ["Mon","Tue","Wed","Thu","Fri"]
 for i in range(20):
     nm = ["Avery","Bree","Caleb","Dina","Eli","Faith","Gus","Hana","Ian","Jae",
           "Kira","Leo","Mila","Noah","Omar","Pia","Quinn","Rosa","Sam","Tess"][i]
-    Employee.create(name=nm, is_lead=i < 6, min_hours=rng.choice([0,0,6,9]),
+    employee = Employee.create(name=nm, is_lead=i < 6, min_hours=rng.choice([0,0,6,9]),
                     max_hours=rng.choice([20,25,30]))
     row = {}
     for d in DAYS:
@@ -19,6 +23,6 @@ for i in range(20):
         if rng.random() < 0.7:
             ps = rng.randint(s, max(s, e-3))
             for h in range(ps, min(ps+rng.randint(3,6), e+1)): row["%s_%02d"%(d,h)] = 2
-    Availability.create(employee_name=nm, data_json=json.dumps(row))
+    FolderAvailability.create(employee=employee, folder=folder_id, data_json=json.dumps(row))
 db.close()
 print("seeded 20 employees")

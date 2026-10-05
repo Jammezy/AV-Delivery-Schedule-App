@@ -18,7 +18,8 @@ from models import (
     db, init_db, Employee, Availability, get_config, save_config,
     normalize_level, Folder, SubmissionState, FolderAvailability,
     SavedSchedule, SavedWeekendSchedule, AdminSession, write_transaction,
-    IntakeSubmission, CollectionCode, CollectionSettings,
+    IntakeSubmission, CollectionCode, CollectionSettings, EditGrant, FolderEmployee, FolderConfig,
+    folder_members, enroll_employee,
 )
 import solver as solver_module
 import weekend_generator
@@ -182,7 +183,7 @@ def freeze_consent(cfg, rows, folder_id):
 def submission_json(row, cfg=None):
     return {"employeeId": row.employee_id, "availability": row.get_data(),
             'permissionVersion': permission_version(row),
-            'consent': consent_status(json.loads(row.data_json), recorded_consent(row), cfg or get_config()),
+            'consent': consent_status(json.loads(row.data_json), recorded_consent(row), cfg or get_config(row.folder_id)),
             "comment": row.comment, "submittedAt": row.submitted_at.isoformat() + "Z"}
 
 
@@ -206,11 +207,12 @@ def update_boundary_permissions():
         abort(400, 'Both permission choices must be explicit booleans.')
     with write_transaction():
         folder = folder_or_404(data['folderId'])
+        require_member(folder.id, data['employeeId'])
         row = FolderAvailability.get_or_none((FolderAvailability.folder == folder) &
             (FolderAvailability.employee == data['employeeId']))
         if row is None:
             abort(404, 'No submission for this employee in this folder.')
-        cfg = get_config()
+        cfg = get_config(folder.id)
         if data.get('permissionVersion') != permission_version(row):
             abort(409, 'This employee submission changed. Reload permissions before saving.')
         if data.get('consentContext') != boundary_context(cfg)['token']:
@@ -225,104 +227,188 @@ def update_boundary_permissions():
 
 
 
-# ---------------- config ----------------
-@app.get("/api/config")
-def get_config_route():
-    from collection_codes import PUBLIC_FIELDS
-    cfg = get_config()
-    # Supervisor bearer credentials can obtain all settings; public fields contain no roster.
-    session = AdminSession.get_or_none(AdminSession.token_hash == token_hash())
-    return jsonify(cfg if session and session.expires_at > now() else {k: cfg[k] for k in PUBLIC_FIELDS if k in cfg})
+# ---------------- folder settings and roster ----------------
+def requested_folder(folder_id=None):
+    value = folder_id if folder_id is not None else request.args.get('folderId', type=int)
+    if type(value) is not int:
+        abort(400, 'Choose a folder.')
+    return folder_or_404(value)
 
 
-@app.put("/api/config")
+def require_member(folder_id, employee_id):
+    member = FolderEmployee.get_or_none((FolderEmployee.folder == folder_id) &
+        (FolderEmployee.employee == employee_id) & FolderEmployee.active)
+    if member is None:
+        abort(404, 'Employee does not belong to this folder.')
+    return member
+
+
+def serialize(e, folder_id=None):
+    member = e if isinstance(e, FolderEmployee) else require_member(folder_id, e.id)
+    employee = member.employee
+    return dict(id=employee.id, name=employee.name, isLead=member.is_lead,
+                minHours=member.min_hours, maxHours=member.max_hours)
+
+
+@app.get('/api/config')
+@app.get('/api/folders/<int:folder_id>/config')
 @require_admin
-def put_config():
+def get_config_route(folder_id=None):
+    folder = requested_folder(folder_id)
+    return jsonify(get_config(folder.id))
+
+
+@app.put('/api/config')
+@app.put('/api/folders/<int:folder_id>/config')
+@require_admin
+def put_config(folder_id=None):
+    folder = requested_folder(folder_id)
     data = body()
-    data["days"] = ["Mon", "Tue", "Wed", "Thu", "Fri"]
-    data.pop("availabilityDays", None)
-    # Input-only snapshot metadata can never be installed as global configuration.
-    data.pop('boundaryConsents', None)
-    data.pop('boundaryConsentFolderId', None)
+    data['days'] = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']
+    for key in ('availabilityDays', 'boundaryConsents', 'boundaryConsentFolderId'):
+        data.pop(key, None)
     with write_transaction():
-        updated, errors = save_config(data)
+        updated, errors = save_config(data, folder.id)
     if errors:
-        return jsonify({"errors": errors, "config": updated}), 400
+        return jsonify(errors=errors, config=updated), 400
     return jsonify(updated)
 
 
-# ---------------- employees ----------------
-def serialize(e):
-    return {"id": e.id, "name": e.name, "isLead": e.is_lead,
-            "minHours": e.min_hours, "maxHours": e.max_hours}
-
-
-@app.get("/api/roster")
+@app.get('/api/roster')
 @require_admin
 def supervisor_roster():
-    """Legacy roster lookup restricted to supervisors."""
-    cfg = get_config()
-    return jsonify({
-        "names": sorted(e.name for e in Employee.select()),
-        "allowSelfRegister": bool(cfg.get("allowSelfRegister", True)),
-    })
+    folder = requested_folder()
+    return jsonify(names=[m.employee.name for m in folder_members(folder.id)],
+                   allowSelfRegister=bool(get_config(folder.id).get('allowSelfRegister', True)))
 
 
-@app.get("/api/employees")
+@app.get('/api/employees')
+@app.get('/api/folders/<int:folder_id>/employees')
 @require_admin
-def list_employees():
-    return jsonify([serialize(e) for e in Employee.select().order_by(Employee.name)])
+def list_employees(folder_id=None):
+    folder = requested_folder(folder_id)
+    return jsonify([serialize(m) for m in folder_members(folder.id)])
 
 
-@app.get("/api/staffing-plan")
+@app.get('/api/staffing-plan')
+@app.get('/api/folders/<int:folder_id>/staffing-plan')
 @require_admin
-def staffing_plan():
-    """Roster-wide planning, independent of submissions and generation selection."""
-    cfg = get_config()
-    employees = [serialize(e) for e in Employee.select().order_by(Employee.name)]
+def staffing_plan(folder_id=None):
+    folder = requested_folder(folder_id)
+    cfg = get_config(folder.id)
+    employees = [serialize(m) for m in folder_members(folder.id)]
     required = sum(solver_module.required_staff(day, hour, cfg)
-                   for day in cfg["days"] for hour in solver_module.hours_of(cfg))
-    allotted = sum(e["minHours"] for e in employees)
-    return jsonify(requiredHours=required, allottedHours=allotted,
+                   for day in cfg['days'] for hour in solver_module.hours_of(cfg))
+    allotted = sum(e['minHours'] for e in employees)
+    return jsonify(folderId=folder.id, requiredHours=required, allottedHours=allotted,
                    remainingHours=required - allotted, employees=employees)
 
 
-@app.put("/api/employees/<path:name>")
-@require_admin
-def upsert_employee(name):
-    name = resolve_name(name)
-    if not name:
-        return jsonify({"error": "A name is required."}), 400
-    data = body()
+def employee_values(data):
     values = []
-    for key, default in (("minHours", 0), ("maxHours", 40)):
+    for key, default in (('minHours', 0), ('maxHours', 40)):
         raw = data.get(key, default)
         if type(raw) is int and raw >= 0:
             values.append(raw)
-        elif isinstance(raw, str) and re.fullmatch(r"[0-9]+", raw):
+        elif isinstance(raw, str) and re.fullmatch(r'[0-9]+', raw):
             values.append(int(raw))
         else:
-            return jsonify(error="Hours must be nonnegative whole numbers."), 400
+            abort(400, 'Hours must be nonnegative whole numbers.')
     if values[0] > values[1]:
-        return jsonify({"error": "Minimum hours can't exceed maximum hours."}), 400
-    emp, _ = Employee.get_or_create(name=name)
-    emp.is_lead = bool(data.get("isLead"))
-    emp.min_hours, emp.max_hours = values
-    emp.save()
-    return jsonify(serialize(emp))
+        abort(400, "Minimum hours can't exceed maximum hours.")
+    return values
 
 
-@app.delete("/api/employees/<path:name>")
+@app.get('/api/employees/unassigned')
+@require_admin
+def unassigned_employees():
+    ids = FolderEmployee.select(FolderEmployee.employee)
+    return jsonify([dict(id=e.id, name=e.name) for e in Employee.select().where(
+        Employee.id.not_in(ids)).order_by(Employee.name)])
+
+
+@app.post('/api/folders/<int:folder_id>/employees')
+@require_admin
+def add_folder_employee(folder_id):
+    folder = requested_folder(folder_id)
+    data = body()
+    with write_transaction():
+        if 'employeeId' in data:
+            eid = data['employeeId']
+            if type(eid) is not int:
+                abort(400, 'Choose an unassigned employee.')
+            employee = Employee.get_or_none(Employee.id == eid)
+            if not employee or FolderEmployee.select().where(FolderEmployee.employee == eid).exists():
+                abort(409, 'This employee is already assigned. Refresh the unassigned list.')
+        else:
+            name = data.get('name')
+            if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
+                abort(400, 'Enter a name of 1–100 characters.')
+            base = re.sub(r'\s+', ' ', name).strip()
+            name, number = base, 2
+            # Shared names do not establish identity or enroll another folder's employee.
+            existing = {e.name.casefold() for e in Employee.select(Employee.name)}
+            while name.casefold() in existing:
+                name = f'{base} ({number})'; number += 1
+            employee = Employee.create(name=name)
+        member = enroll_employee(employee, folder.id)
+    return jsonify(serialize(member)), 201
+
+
+@app.put('/api/folders/<int:folder_id>/employees/<int:employee_id>')
+@require_admin
+def update_folder_employee(folder_id, employee_id):
+    requested_folder(folder_id)
+    data = body()
+    values = employee_values(data)
+    with write_transaction():
+        member = require_member(folder_id, employee_id)
+        member.is_lead = bool(data.get('isLead'))
+        member.min_hours, member.max_hours = values
+        member.save()
+    return jsonify(serialize(member))
+
+
+@app.delete('/api/folders/<int:folder_id>/employees/<int:employee_id>')
+@require_admin
+def remove_folder_employee(folder_id, employee_id):
+    requested_folder(folder_id)
+    with write_transaction():
+        member = require_member(folder_id, employee_id)
+        member.active = False
+        member.save(only=[FolderEmployee.active])
+        EditGrant.update(revoked=True).where((EditGrant.employee == employee_id) & (EditGrant.folder == folder_id)).execute()
+    return jsonify(ok=True)
+
+
+# Explicitly scoped aliases for older administrator integrations.
+@app.put('/api/employees/<path:name>')
+@require_admin
+def upsert_employee(name):
+    folder = requested_folder()
+    name = resolve_name(name)
+    if not name:
+        abort(400, 'A name is required.')
+    employee_values(body())
+    member = folder_members(folder.id).where(Employee.name == name).first()
+    if member is None:
+        with write_transaction():
+            employee = Employee.get_or_none(Employee.name == name)
+            if employee and FolderEmployee.select().where(FolderEmployee.employee == employee).exists():
+                abort(409, 'Use the folder employee ID; this name belongs to another folder.')
+            employee = employee or Employee.create(name=name)
+            member = enroll_employee(employee, folder.id)
+    return update_folder_employee.__wrapped__(folder.id, member.employee_id)
+
+
+@app.delete('/api/employees/<path:name>')
 @require_admin
 def delete_employee(name):
-    name = resolve_name(name)
-    employee = Employee.get_or_none(Employee.name == name)
-    if employee and FolderAvailability.select().where(FolderAvailability.employee == employee).exists():
-        abort(409, "This employee has saved submissions. Exclude them from generation to keep their history.")
-    with write_transaction():
-        Employee.delete().where(Employee.name == name).execute()
-        Availability.delete().where(Availability.employee_name == name).execute()
-    return jsonify({"ok": True})
+    folder = requested_folder()
+    member = folder_members(folder.id).where(Employee.name == resolve_name(name)).first()
+    if member is None:
+        abort(404, 'Employee does not belong to this folder.')
+    return remove_folder_employee.__wrapped__(folder.id, member.employee_id)
 
 
 @app.get("/api/submission-context")
@@ -349,6 +435,7 @@ def create_folder():
         abort(400, "Enter a folder name of 1–100 characters.")
     with write_transaction():
         folder = Folder.create(name=name.strip())
+        FolderConfig.create(folder=folder, data_json=json.dumps(get_config(folder.id)))
         if data.get("activate") is True:
             SubmissionState.update(active_folder=folder, revision=SubmissionState.revision + 1).where(SubmissionState.id == 1).execute()
     return jsonify(folder_json(folder)), 201
@@ -403,7 +490,8 @@ def deletion_scope(folder):
                        ("weekdaySchedules", SavedSchedule),
                        ("weekendSchedules", SavedWeekendSchedule),
                        ("unverifiedResponses", IntakeSubmission),
-                       ("collectionCodes", CollectionCode)):
+                       ("collectionCodes", CollectionCode),
+                       ("folderEmployees", FolderEmployee), ("folderSettings", FolderConfig)):
         include(key)
         counts[key] = 0
         for row in model.select().where(model.folder == folder.id).order_by(model.id).dicts():
@@ -443,6 +531,8 @@ def delete_folder(folder_id):
         IntakeSubmission.delete().where(IntakeSubmission.folder == folder.id).execute()
         CollectionCode.delete().where(CollectionCode.folder == folder.id).execute()
         CollectionSettings.delete().where(CollectionSettings.folder == folder.id).execute()
+        FolderEmployee.delete().where(FolderEmployee.folder == folder.id).execute()
+        FolderConfig.delete().where(FolderConfig.folder == folder.id).execute()
         folder.delete_instance()
     return jsonify(ok=True, deletedFolderId=folder_id, deletedCounts=preview["counts"])
 
@@ -461,12 +551,14 @@ def generation_input_version(rows):
     # Consent-only changes keep the pre-solve frozen agreement, as before.
     # Resubmission resets submitted_at; cleanup removes the row entirely.
     versions = sorted((r.id, r.employee_id, r.folder_id, r.submitted_at.isoformat(),
-                       r.data_json, r.comment) for r in rows)
+                       r.data_json, r.comment, serialize(r.employee, r.folder_id)) for r in rows)
+    # Fingerprint each selected submission and its folder-specific employee attributes.
     return hashlib.sha256(json.dumps(versions).encode()).hexdigest()
 
 
 def recheck_generation_inputs(folder, version, employee_ids=None):
-    rows = FolderAvailability.select().where(FolderAvailability.folder == folder.id)
+    rows = FolderAvailability.select().where((FolderAvailability.folder == folder.id) &
+        FolderAvailability.employee.in_(folder_members(folder.id).select(FolderEmployee.employee)))
     if employee_ids is not None:
         rows = rows.where(FolderAvailability.employee.in_(employee_ids))
     if generation_input_version(list(rows)) != version:
@@ -483,9 +575,9 @@ def get_one_availability(name):
     employee = Employee.get_or_none(Employee.name == resolve_name(name))
     row = FolderAvailability.get_or_none((FolderAvailability.employee == employee.id) &
           (FolderAvailability.folder == state.active_folder_id)) if employee else None
-    cfg = get_config()
+    cfg = get_config(state.active_folder_id)
     result = submission_json(row, cfg) if row else {}
-    result.update(found=row is not None, employee=serialize(employee) if employee else None)
+    result.update(found=row is not None, employee=serialize(employee, state.active_folder_id) if row else None)
     result.update(boundaryContext=boundary_context(cfg), config=cfg)
     return jsonify(result)
 
@@ -495,9 +587,10 @@ def get_one_availability(name):
 @require_admin
 def get_all_availability():
     folder = folder_or_404(request.args.get("folderId", type=int))
-    employees = [serialize(e) for e in Employee.select().order_by(Employee.name)]
-    rows = list(FolderAvailability.select().where(FolderAvailability.folder == folder))
-    cfg = get_config()
+    employees = [serialize(m) for m in folder_members(folder.id)]
+    rows = list(FolderAvailability.select().where((FolderAvailability.folder == folder) &
+        FolderAvailability.employee.in_([e["id"] for e in employees])))
+    cfg = get_config(folder.id)
     availability = {r.employee.name: r.get_data() for r in rows}
     return jsonify(folder=folder_json(folder), employees=employees, availability=availability,
         submittedAt={r.employee.name: r.submitted_at.isoformat() + "Z" for r in rows},
@@ -525,6 +618,7 @@ def admin_update_availability():
 
     with write_transaction():
         folder = folder_or_404(folder_id)
+        require_member(folder.id, employee_id)
         employee = Employee.get_or_none(Employee.id == employee_id)
         if not employee:
             abort(404, "Employee not found.")
@@ -552,15 +646,16 @@ def admin_update_availability():
 # ---------------- diagnostics ----------------
 def _load_inputs(folder_id, ids=None):
     folder_or_404(folder_id)
-    cfg = get_config()
-    rows = FolderAvailability.select().where(FolderAvailability.folder == folder_id)
+    cfg = get_config(folder_id)
+    rows = FolderAvailability.select().where((FolderAvailability.folder == folder_id) &
+        FolderAvailability.employee.in_(folder_members(folder_id).select(FolderEmployee.employee)))
     if ids is not None:
         rows = rows.where(FolderAvailability.employee.in_(ids))
     rows = list(rows)
     if ids is not None and {r.employee_id for r in rows} != set(ids):
         abort(400, "Every selected employee must have a submission in this folder.")
     freeze_consent(cfg, rows, folder_id)
-    return cfg, [serialize(r.employee) for r in rows], {r.employee.name: r.get_data() for r in rows}, rows
+    return cfg, [serialize(r.employee, folder_id) for r in rows], {r.employee.name: r.get_data() for r in rows}, rows
 
 @app.get("/api/diagnostics")
 @require_admin
@@ -594,10 +689,16 @@ def generate_weekend():
         folder = folder_or_404(data.get("folderId"))
 
         # We fetch all employees for this folder.
-        rows = list(FolderAvailability.select().where(FolderAvailability.folder == folder))
+        rows = list(FolderAvailability.select().where((FolderAvailability.folder == folder) &
+            FolderAvailability.employee.in_(folder_members(folder.id).select(FolderEmployee.employee))))
 
-        roster = [serialize(r.employee) for r in rows]
+        roster = [serialize(m) for m in folder_members(folder.id)]
         availability = {r.employee.name: r.get_data() for r in rows}
+
+        ids = {e['id'] for e in roster}
+        selected = list(config.get('fixed_assignments', {}).values()) + list(config.get('rotating_employees', []))
+        if any(type(eid) is not int or eid not in ids for eid in selected):
+            abort(400, 'Every weekend employee must belong to this folder.')
 
         input_version = generation_input_version(rows)
     result = weekend_generator.generate_weekend_schedule(config, availability, roster)
@@ -669,12 +770,14 @@ def generate():
         abort(400, "Select at least one employee with submitted availability.")
     with write_transaction():
         folder = folder_or_404(data.get("folderId"))
+        for employee_id in ids:
+            require_member(folder.id, employee_id)
         rows = list(FolderAvailability.select().where((FolderAvailability.folder == folder) & (FolderAvailability.employee.in_(ids))))
         if {r.employee_id for r in rows} != set(ids):
             abort(400, "Every selected employee must have a submission in this folder.")
-        roster = [serialize(r.employee) for r in rows]
+        roster = [serialize(r.employee, folder.id) for r in rows]
         availability = {r.employee.name: r.get_data() for r in rows}
-        cfg = get_config()
+        cfg = get_config(folder.id)
         freeze_consent(cfg, rows, folder.id)
         submissions = [submission_json(r, cfg) for r in rows]
         input_version = generation_input_version(rows)

@@ -14,7 +14,7 @@ from models import *
 with db.connection_context(), write_transaction():
     cfg, errors = save_config(dict(reqStaffOpen=1,reqStaffLate=1,minShiftLength=1,
         maxShiftLength=6,requireLeadDuringOpen=False,blockClopening=False,
-        dayCloseHours={'Fri':19},solverWorkers=1,solverTimeLimit=3))
+        dayCloseHours={'Fri':19},solverWorkers=1,solverTimeLimit=3),1)
     assert not errors
     employee=Employee.create(name='Alex',min_hours=0,max_hours=40)
     grid={'Mon_07':2,'Mon_08':1,'Fri_19':1,'Fri_20':2,'Fri_21':1,'Sat_21':2,'Sun_16':1}
@@ -98,10 +98,10 @@ async function check(viewport) {
     assert.equal(await page.locator('#editAvailGrid [data-level="1"], #editAvailGrid [data-level="2"]').count(),0);
     await page.locator('#editAvailCancelBtn').click();
     // Narrow saved scheduling settings must not discard any collection entries.
-    const configResponse = await page.request.put('http://127.0.0.1:5097/api/config',{headers,data:{hourStart:9,hourEnd:16,
+    const configResponse = await page.request.put('http://127.0.0.1:5097/api/folders/1/config',{headers,data:{hourStart:9,hourEnd:16,
       lateHourStart:17,minShiftLength:1,maxShiftLength:6,reqStaffLate:0,dayCloseHours:{Fri:13}}});
     assert.equal(configResponse.status(),200);
-    await page.evaluate(async()=>{CONFIG=await apiGet('/api/config');await renderOverview();});
+    await page.evaluate(async()=>{CONFIG=await apiGet('/api/folders/1/config');await renderOverview();});
     await open();
     for (const key of ['Mon_07','Fri_19','Fri_20','Fri_21','Sat_21','Sun_16']) assert.notEqual(await cell(key).getAttribute('data-level'),'0');
     await mode(2);await keyboardPaint('Tue_07');

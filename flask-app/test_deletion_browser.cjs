@@ -21,10 +21,10 @@ with db.connection_context(), write_transaction():
     for folder in [target, other]:
         for employee in employees:
             FolderAvailability.create(folder=folder, employee=employee, data_json='{"Mon_07":2,"Sat_07":1}', comment='Disposable comment')
-        result = {'config':cfg, 'employees':[app.serialize(e) for e in employees], 'fairness':[], 'schedule':{day:{7:{'DLA':'Alex'}} for day in cfg['days']}, 'work':{day:{h:[] for h in range(cfg['hourStart'],cfg['hourEnd']+1)} for day in cfg['days']}}
+        result = {'config':cfg, 'employees':[app.serialize(e,folder.id) for e in employees], 'fairness':[], 'schedule':{day:{7:{'DLA':'Alex'}} for day in cfg['days']}, 'work':{day:{h:[] for h in range(cfg['hourStart'],cfg['hourEnd']+1)} for day in cfg['days']}}
         SavedSchedule.create(folder=folder, snapshot_json=json.dumps({'result':result}))
         SavedWeekendSchedule.create(folder=folder, snapshot_json=json.dumps({'folderId':folder.id,
-            'folderVersion':folder.created_at.isoformat(), 'employees':[app.serialize(e) for e in employees],
+            'folderVersion':folder.created_at.isoformat(), 'employees':[app.serialize(e,folder.id) for e in employees],
             'assignments':[
                 {'friday':'2026-09-04','date':'2026-09-04','shift':{'key':'friday_evening'},'assigned':employees[0].id,'origin':'fixed'},
                 {'friday':'2026-09-04','date':'2026-09-06','shift':{'key':'sunday_afternoon'},'assigned':employees[1].id,'origin':'rotating'}],
@@ -63,7 +63,7 @@ async function check(viewport) {
     await page.locator('#deleteFolderBtn').click();
     await page.locator('#deleteFolderDetails').getByText('Disposable Fall <2026>',{exact:true}).waitFor();
     const text=await page.locator('#deleteFolderDetails').textContent();
-    for(const expected of ['2 accepted availability submissions','1 saved weekday','1 saved weekend','cannot be undone','roster entries','stops submissions'])assert.ok(text.includes(expected),expected);
+    for(const expected of ['2 accepted availability submissions','1 saved weekday','1 saved weekend','cannot be undone','roster memberships','stops submissions'])assert.ok(text.includes(expected),expected);
     const box=await page.locator('#deleteFolderDialog').boundingBox();
     assert.ok(box.x>=0&&box.x+box.width<=viewport.width&&box.height<=viewport.height);
     await page.locator('#deleteFolderConfirmation').fill('wrong');assert.equal(await page.locator('#deleteFolderConfirmBtn').isDisabled(),true);
@@ -90,13 +90,13 @@ async function check(viewport) {
     const overview=await api(`/api/availability?folderId=${ids.other}`);assert.equal(overview.submissions.length,2);
     assert.equal((await api(`/api/folders/${ids.other}/schedules`)).length,1);
     assert.equal((await api(`/api/folders/${ids.other}/weekend_schedules`)).length,1);
-    assert.equal((await api('/api/employees')).length,2);
+    assert.equal((await api(`/api/folders/${ids.other}/employees`)).length,2);
     for(const id of ['scheduleOutput','fairnessOutput','wkndPreviewArea'])assert.equal(await page.locator('#'+id).textContent(),'');
     assert.equal(await page.evaluate(()=>LAST_RESULT),null);assert.equal(await page.evaluate(()=>LAST_WKND_PREVIEW),null);
     await page.locator('#deleteFolderBtn').click();await page.locator('#deleteFolderConfirmation').fill('Preserved semester');
     await page.locator('#deleteFolderConfirmBtn').click();await page.locator('#overviewArea').getByText(/No folders yet/).waitFor({state:'attached'});
-    assert.equal(await page.locator('#createFolderBtn').isEnabled(),true);assert.equal(await page.locator('#addEmpBtn').isEnabled(),true);
-    assert.match(await page.locator('#diagnosticsStaffingPlan').textContent(),/Weekly hours remaining/);
+    assert.equal(await page.locator('#createFolderBtn').isEnabled(),true);assert.equal(await page.locator('#addEmpBtn').isEnabled(),false);
+    assert.match(await page.locator('#employeeTableWrap').textContent(),/Create or select a folder/);
     await page.screenshot({path:path.join(__dirname,'test-browser-output',`empty-${viewport.width}.png`),fullPage:true});
     console.log(`PASS real browser confirmation/deletion and final-folder flow at ${viewport.width}×${viewport.height}`);
   } finally {

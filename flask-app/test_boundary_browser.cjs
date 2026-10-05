@@ -13,7 +13,7 @@ from models import *
 with db.connection_context(), write_transaction():
     cfg, errors = save_config(dict(reqStaffOpen=1,reqStaffLate=1,minShiftLength=2,
         maxShiftLength=6,requireLeadDuringOpen=False,blockClopening=False,
-        solverWorkers=1,solverTimeLimit=3))
+        solverWorkers=1,solverTimeLimit=3),1)
     assert not errors
     for name in ['Alex','Blair','Casey','Drew','Emery','Finley']:
         employee = Employee.create(name=name,min_hours=0,max_hours=40)
@@ -93,7 +93,7 @@ async function check(viewport) {
     const ids=overview.submissions.map(s=>s.employeeId);
     let generated;
     for(const enabled of [false,true]) {
-      await page.request.put('http://127.0.0.1:5098/api/config',{headers,data:{allowPreferredBoundaryExtras:enabled}});
+      await page.request.put('http://127.0.0.1:5098/api/folders/1/config',{headers,data:{allowPreferredBoundaryExtras:enabled}});
       generated=await (await page.request.post('http://127.0.0.1:5098/api/generate',{headers,data:{folderId:1,employeeIds:ids,seed:1}})).json();
       assert.ok(['OPTIMAL','FEASIBLE'].includes(generated.status),JSON.stringify(generated));
       for(const r of generated.boundarySummary) {
@@ -103,7 +103,7 @@ async function check(viewport) {
         if(!enabled)assert.equal(r.overrun,0);
       }
     }
-    await page.request.put('http://127.0.0.1:5098/api/config',{headers,data:{maxMorningShifts:3}});
+    await page.request.put('http://127.0.0.1:5098/api/folders/1/config',{headers,data:{maxMorningShifts:3}});
     await page.reload();
     await fixtureAPI.open(page,'Alex');
     await page.locator('#reconfirmConsent').waitFor({state:'visible'});
@@ -114,11 +114,11 @@ async function check(viewport) {
     await page.locator('#reconfirmConsent').focus();await page.keyboard.press('Enter');
     assert.equal(await page.locator('#submitBtn').isDisabled(),false);
     // Existing refresh receives saved supervisor caps and preserves the draft choice.
-    await page.request.put('http://127.0.0.1:5098/api/config',{headers,data:{maxMorningShifts:2}});
+    await page.request.put('http://127.0.0.1:5098/api/folders/1/config',{headers,data:{maxMorningShifts:2}});
     await page.evaluate(()=>refreshContext());
     assert.equal(await page.locator('#boundaryChoices').isVisible(),true);
     assert.equal(await page.locator('#allowExtraOpenings').isChecked(),true);
-    await page.request.put('http://127.0.0.1:5098/api/config',{headers,data:{maxMorningShifts:3}});
+    await page.request.put('http://127.0.0.1:5098/api/folders/1/config',{headers,data:{maxMorningShifts:3}});
     await page.evaluate(()=>refreshContext());
     assert.equal(await page.locator('#boundaryChoices').isVisible(),false);
     const managementBox=await page.locator('#boundaryConsentManagement').boundingBox();

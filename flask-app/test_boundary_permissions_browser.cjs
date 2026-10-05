@@ -12,7 +12,7 @@ import app
 from models import *
 with db.connection_context(), write_transaction():
     cfg,errors=save_config(dict(minShiftLength=3,maxShiftLength=6,reqStaffOpen=1,reqStaffLate=1,
-        maxMorningShifts=0,maxEveningShifts=0,maxMorningPlusEvening=0,requireLeadDuringOpen=False))
+        maxMorningShifts=0,maxEveningShifts=0,maxMorningPlusEvening=0,requireLeadDuringOpen=False),1)
     assert not errors
     for name in ['Alex','Blair']:
         e=Employee.create(name=name,min_hours=0,max_hours=40)
@@ -69,7 +69,7 @@ async function check(viewport) {
     await fixtureAPI.open(employee,'Alex');
     const token=(await current()).consent.consentContext;
     for(const [minimum,openings] of [[2,1],[4,0],[2,1]]) {
-      const response=await page.request.put('http://127.0.0.1:5096/api/config',{headers,data:{minShiftLength:minimum,allowPreferredBoundaryExtras:true}});
+      const response=await page.request.put('http://127.0.0.1:5096/api/folders/1/config',{headers,data:{minShiftLength:minimum,allowPreferredBoundaryExtras:true}});
       assert.equal(response.status(),200);
       await employee.evaluate(()=>refreshContext());
       const consent=(await current()).consent;
@@ -81,7 +81,7 @@ async function check(viewport) {
       await page.evaluate(()=>renderOverview());
       assert.equal(await page.locator('#supervisorExtraOpenings').isChecked(),true);
     }
-    await page.request.put('http://127.0.0.1:5096/api/config',{headers,data:{maxShiftLength:4}});
+    await page.request.put('http://127.0.0.1:5096/api/folders/1/config',{headers,data:{maxShiftLength:4}});
     assert.equal((await current()).consent.reconfirmationNeeded,false);
     // A failed save keeps choices. An employee change conflicts with a stale draft.
     await page.locator('#supervisorExtraOpenings').uncheck();
@@ -100,7 +100,7 @@ async function check(viewport) {
     assert.equal((await current()).consent.allowExtraClosings,true);
     const after=await overview(1);
     assert.ok(after.submissions.length>initial.submissions.length);
-    await page.request.put('http://127.0.0.1:5096/api/config',{headers,data:{maxMorningShifts:1}});
+    await page.request.put('http://127.0.0.1:5096/api/folders/1/config',{headers,data:{maxMorningShifts:1}});
     await page.evaluate(()=>renderOverview());
     assert.match(await page.locator('#viewerPermissionControls').innerText(),/Reconfirmation required/);
     await save();assert.equal((await current()).consent.reconfirmationNeeded,false);
