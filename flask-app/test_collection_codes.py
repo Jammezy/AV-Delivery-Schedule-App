@@ -23,7 +23,7 @@ class CollectionTests(unittest.TestCase):
   web.app.config['REQUEST_RETENTION_ENABLED']=False
   self.tmp=tempfile.TemporaryDirectory();db.close()
   if test_pg:
-   with db.connection_context():db.drop_tables([RateBucket,SubmissionSession,EditGrant,IntakeSubmission,CollectionCode,CollectionSettings,AdminSession,SavedWeekendSchedule,SavedSchedule,FolderAvailability,SubmissionState,Folder,Availability,Employee,Config],cascade=True)
+   with db.connection_context():db.drop_tables([SchemaMigration,FolderEmployee,FolderConfig,RateBucket,SubmissionSession,EditGrant,IntakeSubmission,CollectionCode,CollectionSettings,AdminSession,SavedWeekendSchedule,SavedSchedule,FolderAvailability,SubmissionState,Folder,Availability,Employee,Config],cascade=True)
   else:db.init(str(Path(self.tmp.name)/'test.db'))
   init_db()
   self.client=FlaskClient(web.app)
@@ -284,7 +284,7 @@ class CollectionTests(unittest.TestCase):
   with db.connection_context():self.assertEqual(FolderAvailability.select().count(),0)
  def test_link_exposes_full_saved_collection_under_narrow_scheduling_hours(self):
   self.submit(self.unlock(self.code()));row=self.intake()['submissions'][0]
-  narrowed=self.client.put('/api/config',headers=self.admin,json=dict(hourStart=9,hourEnd=16,lateHourStart=17,dayCloseHours={'Fri':13}))
+  narrowed=self.client.put(f'/api/folders/{self.fid}/config',headers=self.admin,json=dict(hourStart=9,hourEnd=16,lateHourStart=17,dayCloseHours={'Fri':13}))
   self.assertEqual(narrowed.status_code,200,narrowed.json)
   self.assertEqual(self.admin_edit(row['employeeId'],'Full saved grid',availability={'Mon_07':2,'Fri_21':1,'Sun_16':1}).status_code,200)
   c,context,h=self.open_link(row)
@@ -296,10 +296,12 @@ class CollectionTests(unittest.TestCase):
   self.assertEqual(saved.status_code,200)
   self.assertEqual(self.submit(h,c,permissionVersion=context['edit']['permissionVersion']).status_code,409)
   fresh=c.get('/api/collection/context').json;self.assertTrue(fresh['edit']['consent']['allowExtraOpenings'])
-  self.client.put('/api/config',headers=self.admin,json={'maxMorningShifts':4})
+  self.client.put(f'/api/folders/{self.fid}/config',headers=self.admin,json={'maxMorningShifts':4})
   self.assertTrue(c.get('/api/collection/context').json['edit']['consent']['reconfirmationNeeded'])
   with db.connection_context():
-   FolderAvailability.delete().where(FolderAvailability.employee==row['employeeId']).execute();Employee.delete().where(Employee.id==row['employeeId']).execute()
+   FolderAvailability.delete().where(FolderAvailability.employee==row['employeeId']).execute()
+   FolderEmployee.delete().where(FolderEmployee.employee==row['employeeId']).execute()
+   Employee.delete().where(Employee.id==row['employeeId']).execute()
   self.assertEqual(c.get('/api/collection/context').status_code,404)
  def test_history_folder_isolation_and_separate_same_names(self):
   code=self.code();h=self.unlock(code)
@@ -337,7 +339,7 @@ class CollectionTests(unittest.TestCase):
   with db.connection_context():
    grant=EditGrant.get_by_id(1);self.assertEqual((grant.employee_id,grant.folder_id),(row['employeeId'],self.fid));self.assertEqual(SubmissionSession.get().edit_grant_id,1)
    self.assertEqual(IntakeSubmission.get_by_id(row['id']).comment,'Synthetic');self.assertEqual(FolderAvailability.get().save_version,0)
-   FolderAvailability.delete().execute();Employee.delete().where(Employee.id==row['employeeId']).execute();self.assertIsNone(EditGrant.get_by_id(1).employee_id)
+   FolderAvailability.delete().execute();FolderEmployee.delete().execute();Employee.delete().where(Employee.id==row['employeeId']).execute();self.assertIsNone(EditGrant.get_by_id(1).employee_id)
  def test_close_reopen_and_expiry(self):
   code=self.code();h=self.unlock(code);self.client.patch(f'/api/folders/{self.fid}',headers=self.admin,json={'archived':True});self.assertEqual(self.submit(h).status_code,409)
   self.client.patch(f'/api/folders/{self.fid}',headers=self.admin,json={'archived':False});self.assertEqual(self.submit(h).status_code,200)

@@ -1,3 +1,9 @@
+## Folder isolation
+
+The selected administrator folder scopes its roster, employee hour/lead attributes,
+scheduling settings, staffing totals, and all scheduling/collection views. See
+[FOLDER_ISOLATION.md](FOLDER_ISOLATION.md) for the migration, scoped API, and validation.
+
 # Schedule App
 
 A web version of `Schedule_Maker_4000.py` + `Formatter_Pro.py`. Employees paint
@@ -336,8 +342,8 @@ The disposable PostgreSQL check and its isolation requirements are documented in
 reviews the exact name and counts, types that name, then confirms deletion.
 Availability (including comments/timestamps), weekday snapshots, weekend
 snapshots, and the folder are removed by folder ID in one write transaction.
-Employees, minimum/maximum hours, lead flags, global settings, legacy storage,
-and every other folder are preserved. Deleting the active folder stops submissions
+This folder’s roster memberships and scheduling settings are removed. Employee
+identities, legacy storage, and every other folder are preserved. Deleting the active folder stops submissions
 and increments the submission revision; it never activates another folder.
 
 The preview version hashes folder identity/state and all dependent record
@@ -352,7 +358,8 @@ again. No schema migration is required.
 The folder view revision invalidates pending requests after deletion, clearing
 availability/comments, selection, diagnostics, both previews/lists, and export
 state. Another folder may be selected for viewing, without activating it. The
-last-folder state keeps folder creation and roster-wide planning available.
+last-folder state keeps folder creation available and disables folder-specific
+employee and settings editing until a folder is selected.
 
 Additional disposable browser checks:
 
@@ -403,8 +410,9 @@ snapshots use their own `created_at`. Archived and active content use the same
 policy. Folders use their own creation date and are removed only after **all**
 their availability, weekday snapshots and weekend snapshots have been removed.
 An old folder with any newer child retains its identity, name and active status.
-Empty newer folders stay. Employees (including lead flags and hour targets),
-global settings, authentication sessions and the submission-state singleton stay.
+Empty newer folders stay. Employee identities, legacy settings, authentication
+sessions and the submission-state singleton stay. A removed folder’s memberships
+and configuration are removed with it.
 
 One UTC time is captured per pass. Subtract 18 **calendar months**, retaining the
 time of day and microseconds, clamping to the last valid day of the destination

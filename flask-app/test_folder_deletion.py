@@ -47,7 +47,7 @@ class FolderDeletionTests:
             others = [(model, list(model.select().where(model.folder == other).dicts()))
                       for model in (FolderAvailability, SavedSchedule, SavedWeekendSchedule)]
         preview = self.preview(first)
-        self.assertEqual(preview['counts'], {'availabilitySubmissions': 2, 'weekdaySchedules': 1, 'weekendSchedules': 1, 'unverifiedResponses': 2, 'collectionCodes': 2})
+        self.assertEqual(preview['counts'], {'availabilitySubmissions': 2, 'weekdaySchedules': 1, 'weekendSchedules': 1, 'unverifiedResponses': 2, 'collectionCodes': 2, 'folderEmployees': 2, 'folderSettings': 1})
         self.assertFalse(preview['acceptsSubmissions'])
         self.assertEqual(self.delete_folder(first, preview).status_code, 200)
         with db.connection_context():
@@ -77,13 +77,13 @@ class FolderDeletionTests:
         original = self.context()['folder']['id']
         archived = self.create_folder('Archived', False)['id']
         self.client.patch(f'/api/folders/{archived}', headers=self.headers, json={'archived': True})
-        self.assertEqual(self.preview(archived)['counts'], {'availabilitySubmissions': 0, 'weekdaySchedules': 0, 'weekendSchedules': 0, 'unverifiedResponses': 0, 'collectionCodes': 0})
+        self.assertEqual(self.preview(archived)['counts'], {'availabilitySubmissions': 0, 'weekdaySchedules': 0, 'weekendSchedules': 0, 'unverifiedResponses': 0, 'collectionCodes': 0, 'folderEmployees': 0, 'folderSettings': 1})
         self.assertEqual(self.delete_folder(archived).status_code, 200)
         self.assertEqual(self.delete_folder(original).status_code, 200)
         self.assertEqual(self.client.get('/api/folders', headers=self.headers).json['folders'], [])
         web.init_db()  # A restart must not resurrect Imported availability.
         self.assertEqual(self.client.get('/api/folders', headers=self.headers).json['folders'], [])
-        self.assertEqual(self.client.get('/api/staffing-plan', headers=self.headers).status_code, 200)
+        self.assertEqual(self.client.get('/api/staffing-plan', headers=self.headers).status_code, 400)
         self.assertEqual(self.create_folder('New semester', False)['name'], 'New semester')
         self.assertIsNone(self.context()['folder'])
 

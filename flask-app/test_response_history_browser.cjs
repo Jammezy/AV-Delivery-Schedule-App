@@ -50,7 +50,7 @@ let serverOutput='';server.stdout.on('data',d=>serverOutput+=d);server.stderr.on
   // Administrator saves after link creation: employee loads that current state.
   const current=await (await context.request.get(base+`/api/availability?folderId=${folder}`,{headers})).json(),saved=current.submissions.find(r=>r.employeeId===repeat.employeeId);
   assert.equal((await context.request.put(base+'/api/admin/availability',{headers,data:{employeeId:repeat.employeeId,folderId:folder,permissionVersion:saved.permissionVersion,availability:{Tue_08:1},comment:'Admin newer'}})).status(),200);
-  assert.equal((await context.request.put(base+'/api/config',{headers,data:{hourStart:9,hourEnd:16,lateHourStart:17,dayCloseHours:{Fri:13}}})).status(),200);
+  assert.equal((await context.request.put(base+`/api/folders/${folder}/config`,{headers,data:{hourStart:9,hourEnd:16,lateHourStart:17,dayCloseHours:{Fri:13}}})).status(),200);
   const employeeContext=await browser.newContext(),employee=await employeeContext.newPage();employee.on('pageerror',e=>errors.push(e.message));
   await employee.goto(link);await employee.locator('#availabilityForm').waitFor({state:'visible'});assert.equal(await employee.locator('#commentInput').inputValue(),'Admin newer');assert.equal(await employee.locator('[data-key="Tue_08"]').getAttribute('data-level'),'1');
   await employee.locator('#commentInput').fill('Employee newest');await employee.locator('#submitBtn').click();await employee.waitForFunction(()=>SAVED);

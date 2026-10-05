@@ -1,6 +1,7 @@
 let FOLDERS = [], FOLDER_ID = null, ACTIVE_FOLDER = null;
 let SELECTED = new Set(), OVERVIEW = null, PINNED = null, PREVIEWED = null;
 let VIEW_REVISION = 0;
+let FOLDER_LOADING = false;
 let OVERVIEW_REQUEST = 0;
 const PERMISSION_DRAFTS = new Map();
 let RECOVERING_CONTENT = false;
@@ -37,12 +38,19 @@ function renderFolderControls() {
   for (const id of ["renameFolderBtn", "archiveFolderBtn", "deleteFolderBtn", "generateBtn", "regenerateBtn", "wkndGenerateBtn"]) {
     $(id).disabled = !FOLDER_ID || DELETION_BUSY;
   }
+  const unavailable = !FOLDER_ID || FOLDER_LOADING || DELETION_BUSY || !CONFIG || !STAFFING_PLAN;
+  for (const id of ['addEmpBtn','newEmpName','saveSettingsBtn','generateBtn','regenerateBtn','wkndGenerateBtn']) $(id).disabled = unavailable;
+  document.querySelectorAll('#employeeTableWrap input, #employeeTableWrap button, #settingsForm input, #settingsForm select').forEach(el => el.disabled = unavailable);
   $("downloadBtn").disabled = DELETION_BUSY || !FOLDER_ID;
   $("folderStatus").textContent = "Codes determine where submissions are saved. Viewing a folder does not change their destination.";
 }
 function clearFolderView() {
   if (typeof clearCollectionView === "function") clearCollectionView();
   PERMISSION_DRAFTS.clear();
+  CONFIG = null; EMPLOYEES = []; STAFFING_PLAN = null; PLAN_REQUEST++; PLAN_STATUS = '';
+  EMPLOYEE_DRAFTS.clear();
+  for (const id of ['employeeTableWrap','settingsForm','settingsMsg','diagnosticsStaffingPlan','employeesStaffingPlan','unassignedEmployees']) $(id).innerHTML = '';
+  $('newEmpName').value = '';
   VIEW_REVISION++;
   PINNED = PREVIEWED = null;
   SELECTED = new Set(); OVERVIEW = null; LAST_DIAG = null;
@@ -62,23 +70,34 @@ async function loadFolders(preferred = FOLDER_ID) {
 async function changeFolder() {
   cancelFolderDeletion();
   FOLDER_ID = $("folderSelect").value ? Number($("folderSelect").value) : null;
+  FOLDER_LOADING = true;
   clearFolderView(); renderFolderControls();
-  const revision = VIEW_REVISION;
-  if (!FOLDER_ID) {
-    $("overviewArea").textContent = "No folders yet. Create a folder to collect availability.";
-    $("diagArea").textContent = "Create or select a folder to check availability.";
-    await refreshStaffingPlan();
-    return;
+  const revision = VIEW_REVISION, folderId = FOLDER_ID;
+  try {
+    if (!folderId) {
+      $('employeeTableWrap').textContent = 'Create or select a folder to manage employees.';
+      $('settingsForm').textContent = 'Create or select a folder to edit settings.';
+      $("overviewArea").textContent = "No folders yet. Create a folder to collect availability.";
+      $("diagArea").textContent = "Create or select a folder to check availability.";
+      return;
+    }
+    const config = await apiGet(`/api/folders/${folderId}/config`);
+    if (!config || revision !== VIEW_REVISION) return;
+    CONFIG = config; renderSettings();
+    await renderEmployees();
+    if (revision !== VIEW_REVISION || !STAFFING_PLAN) return;
+    await renderOverview(true);
+    if (revision !== VIEW_REVISION) return;
+    await refreshDiagnostics();
+    if (revision !== VIEW_REVISION) return;
+    await loadSavedSchedules();
+    if (revision !== VIEW_REVISION) return;
+    await renderWeekendUI();
+    if (revision !== VIEW_REVISION) return;
+    await renderCodes();
+  } finally {
+    if (revision === VIEW_REVISION) { FOLDER_LOADING = false; renderFolderControls(); }
   }
-  await renderOverview(true);
-  if (revision !== VIEW_REVISION) return;
-  await refreshDiagnostics();
-  if (revision !== VIEW_REVISION) return;
-  await loadSavedSchedules();
-  if (revision !== VIEW_REVISION) return;
-  await renderWeekendUI();
-  if (revision !== VIEW_REVISION) return;
-  await renderCodes();
 }
 // Supervisor collection windows are independent of weekday staffing settings.
 const SUPERVISOR_AVAILABILITY_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -497,7 +516,7 @@ async function openFolderDeletion() {
     <li>${c.weekdaySchedules} saved weekday schedules (Monday–Friday)</li>
     <li>${c.weekendSchedules} saved weekend schedules (Friday evening–Sunday)</li></ul>
     <p>Deletion is permanent and cannot be undone through the app.</p>
-    <p>Employee roster entries, minimum/maximum hours, lead designations, global settings, and other folders will be preserved.</p>
+    <p>Employee identities and other folders will be preserved. This folder’s roster memberships and scheduling settings will be deleted.</p>
     ${preview.acceptsSubmissions ? '<p>This folder currently accepts submissions. Deleting it also stops submissions here. No other folder will be activated.</p>' : ''}`;
   updateDeletionConfirmation(); $("deleteFolderConfirmation").focus();
 }

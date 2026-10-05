@@ -71,6 +71,41 @@ class Folder(BaseModel):
     created_at = DateTimeField(default=datetime.datetime.utcnow)
 
 
+class FolderEmployee(BaseModel):
+    folder = ForeignKeyField(Folder, on_delete="CASCADE")
+    employee = ForeignKeyField(Employee, on_delete="RESTRICT")
+    is_lead = BooleanField(default=False)
+    min_hours = IntegerField(default=0)
+    max_hours = IntegerField(default=40)
+    active = BooleanField(default=True)
+
+    class Meta:
+        indexes = ((('folder', 'employee'), True),)
+
+
+class FolderConfig(BaseModel):
+    folder = ForeignKeyField(Folder, unique=True, on_delete="CASCADE")
+    data_json = TextField()
+
+
+class SchemaMigration(BaseModel):
+    name = CharField(unique=True)
+
+
+def folder_members(folder_id):
+    return (FolderEmployee.select(FolderEmployee, Employee).join(Employee)
+            .where((FolderEmployee.folder == folder_id) & FolderEmployee.active)
+            .order_by(Employee.name))
+
+
+def enroll_employee(employee, folder_id):
+    """Explicit enrollment; legacy attributes are only used for initial import."""
+    member, _ = FolderEmployee.get_or_create(folder=folder_id, employee=employee,
+        defaults=dict(is_lead=employee.is_lead, min_hours=employee.min_hours,
+                      max_hours=employee.max_hours))
+    return member
+
+
 class SubmissionState(BaseModel):
     active_folder = ForeignKeyField(Folder, null=True)
     revision = IntegerField(default=0)
@@ -93,6 +128,13 @@ class FolderAvailability(BaseModel):
     def get_data(self):
         return {k: normalize_level(v) for k, v in json.loads(self.data_json).items()
                 if normalize_level(v)}
+
+    def save(self, *args, **kwargs):
+        # A newly accepted/imported sheet establishes explicit roster membership.
+        # Existing inactive memberships remain inactive when history is edited.
+        if self.get_id() is None:
+            enroll_employee(self.employee, self.folder_id)
+        return super().save(*args, **kwargs)
 
 
 class SavedSchedule(BaseModel):
@@ -289,7 +331,7 @@ def coerce_config(cfg):
 def init_db():
     db.connect(reuse_if_open=True)
     with write_transaction():
-        db.create_tables([Employee, Availability, Config, Folder, SubmissionState,
+        db.create_tables([Employee, Availability, Config, Folder, FolderEmployee, FolderConfig, SchemaMigration, SubmissionState,
                           FolderAvailability, SavedSchedule, SavedWeekendSchedule, AdminSession, CollectionSettings,
                           CollectionCode, IntakeSubmission, EditGrant, SubmissionSession, RateBucket])
         # Additive, serialized, transactional migration; preserve every existing row.
@@ -329,18 +371,33 @@ def init_db():
                 FolderAvailability.create(employee=employee, folder=imported,
                     data_json=row.data_json, submitted_at=row.submitted_at)
             SubmissionState.create(id=1, active_folder=imported, revision=1)
+        if not SchemaMigration.get_or_none(SchemaMigration.name == 'folder-isolation-v1'):
+            legacy_config = get_config()
+            for folder in Folder.select():
+                FolderConfig.get_or_create(folder=folder, defaults={'data_json': json.dumps(legacy_config)})
+            associations = {(r.folder_id, r.employee_id) for r in FolderAvailability.select()}
+            associations.update((r.folder_id, r.employee_id) for r in IntakeSubmission.select().where(
+                (IntakeSubmission.status == 'Accepted') & IntakeSubmission.employee.is_null(False)))
+            for folder_id, employee_id in associations:
+                enroll_employee(Employee.get_by_id(employee_id), folder_id)
+            SchemaMigration.create(name='folder-isolation-v1')
         # Upgrade only agreements that were valid immediately before this release.
         # Stale/null records retain their choices and their reconfirmation state.
         from boundary import boundary_context, legacy_consent_token
-        cfg = get_config()
-        FolderAvailability.update(consent_context=boundary_context(cfg)['token']).where(
-            FolderAvailability.consent_context == legacy_consent_token(cfg)).execute()
+        for folder in Folder.select():
+            cfg = get_config(folder.id)
+            FolderAvailability.update(consent_context=boundary_context(cfg)['token']).where(
+                (FolderAvailability.folder == folder.id) &
+                (FolderAvailability.consent_context == legacy_consent_token(cfg))).execute()
     if not db.is_closed():
         db.close()
 
 
-def get_config():
-    row = Config.get_or_none(Config.id == 1)
+def get_config(folder_id=None):
+    # The legacy singleton is retained for migration only; request handlers must
+    # supply an authorized folder. New folders use independent default settings.
+    row = (Config.get_or_none(Config.id == 1) if folder_id is None else
+           FolderConfig.get_or_none(FolderConfig.folder == folder_id))
     cfg = dict(DEFAULT_CONFIG)
     if row:
         try:
@@ -352,19 +409,16 @@ def get_config():
     return cfg
 
 
-def save_config(new_cfg):
+def save_config(new_cfg, folder_id):
     """Returns (config, errors). Nothing is written when errors is non-empty."""
     if 'allowPreferredBoundaryExtras' in (new_cfg or {}) and type(new_cfg['allowPreferredBoundaryExtras']) is not bool:
-        return get_config(), ['Additional preferred boundary shifts must be a boolean.']
-    merged = get_config()
+        return get_config(folder_id), ['Additional preferred boundary shifts must be a boolean.']
+    merged = get_config(folder_id)
     merged.update(coerce_config(new_cfg or {}))
     errors = validate_config(merged)
     if errors:
-        return get_config(), errors
-    row = Config.get_or_none(Config.id == 1)
-    if row is None:
-        Config.create(id=1, data_json=json.dumps(merged))
-    else:
-        row.data_json = json.dumps(merged)
-        row.save()
+        return get_config(folder_id), errors
+    row, _ = FolderConfig.get_or_create(folder=folder_id, defaults={'data_json': json.dumps(merged)})
+    row.data_json = json.dumps(merged)
+    row.save()
     return merged, []

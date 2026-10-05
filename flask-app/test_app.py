@@ -122,7 +122,7 @@ class AppTests(RetentionTests, FolderDeletionTests, unittest.TestCase):
                 json={'minHours': minimum, 'maxHours': 300})
             self.assertEqual(response.status_code, 200)
             self.assertEqual(plan()['remainingHours'], remaining)
-            self.assertEqual(plan('?folderId=999&selection=1&employeeId=999'), plan())
+            self.assertEqual(self.client.get('/api/staffing-plan?folderId=999', headers=self.headers).status_code, 404)
         self.client.delete('/api/employees/Alex', headers=self.headers)
         self.assertEqual(plan(), empty)
 
@@ -132,7 +132,7 @@ class AppTests(RetentionTests, FolderDeletionTests, unittest.TestCase):
             _, errors = save_config({'hourStart': 7, 'hourEnd': 10,
                 'lateHourStart': 9, 'reqStaffOpen': 4, 'reqStaffLate': 2,
                 'fridayCloseHour': 9, 'dayCloseHours': {'Mon': 8},
-                'minShiftLength': 1, 'maxShiftLength': 4})
+                'minShiftLength': 1, 'maxShiftLength': 4}, SubmissionState.get_by_id(1).active_folder_id)
             self.assertFalse(errors)
         result = self.client.get('/api/staffing-plan', headers=self.headers).json
         # Monday 4, Tue–Thu 12 each, Friday 8; hour 10 is included.

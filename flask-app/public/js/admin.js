@@ -31,7 +31,7 @@ function renderStaffingPlan() {
     const remaining = STAFFING_PLAN.requiredHours - allotted;
     const status = remaining > 0 ? `${remaining} hours remaining` : remaining === 0
       ? "0 — minimum hours match demand" : `−${Math.abs(remaining)} — minimum hours exceed demand by ${Math.abs(remaining)}`;
-    html += `<p>Based on all roster employees’ minimum weekly hours.</p>`;
+    html += `<p>Based on this folder’s employees’ minimum weekly hours.</p>`;
     if (invalid) {
       html += `<p class="msg err">Unsaved input is invalid. Enter nonnegative whole hours with minimum no greater than maximum. Saved remaining hours: ${STAFFING_PLAN.remainingHours}.</p>`;
     } else {
@@ -47,12 +47,14 @@ function renderStaffingPlan() {
 }
 
 async function refreshStaffingPlan() {
-  const request = ++PLAN_REQUEST, revision = VIEW_REVISION;
+  const request = ++PLAN_REQUEST, revision = VIEW_REVISION, folderId = FOLDER_ID;
+  if (!folderId) { STAFFING_PLAN = null; PLAN_STATUS = 'Create or select a folder.'; renderStaffingPlan(); return null; }
   PLAN_STATUS = "Loading staffing totals…";
   renderStaffingPlan();
-  const plan = await apiGet("/api/staffing-plan");
+  const plan = await apiGet(`/api/folders/${folderId}/staffing-plan`);
   if (!TOKEN || request !== PLAN_REQUEST || revision !== VIEW_REVISION) return null;
   STAFFING_PLAN = plan;
+  EMPLOYEES = plan?.employees || [];
   PLAN_STATUS = plan ? "" : "Could not load staffing totals. Re-check or reopen Employees to retry.";
   renderStaffingPlan();
   return plan;
@@ -171,6 +173,7 @@ function setupTabs() {
       btn.classList.add("active");
       document.querySelectorAll("#appArea > section").forEach((s) => (s.style.display = "none"));
       $(`tab-${btn.dataset.tab}`).style.display = "block";
+      if (FOLDER_LOADING) return;
       if (btn.dataset.tab === "employees") renderEmployees();
       if (btn.dataset.tab === "overview") { renderOverview(); renderIntake(); }
       if (btn.dataset.tab === "codes") renderCodes();
@@ -181,9 +184,12 @@ function setupTabs() {
 
 // ---------------- employees ----------------
 async function renderEmployees() {
+  const folderId = FOLDER_ID, revision = VIEW_REVISION;
   const plan = await refreshStaffingPlan();
-  if (!plan) return;
+  if (!plan || revision !== VIEW_REVISION || folderId !== FOLDER_ID) return;
   EMPLOYEES = plan.employees;
+  await renderUnassignedEmployees();
+  if (revision !== VIEW_REVISION) return;
   const wrap = $("employeeTableWrap");
   if (!EMPLOYEES.length) {
     wrap.innerHTML = `<p class="hint">Nobody yet. Add someone above, or wait for the first submission.</p>`;
@@ -195,7 +201,7 @@ async function renderEmployees() {
         <th class="left">Name</th><th>Lead</th><th>Min hrs/wk</th><th>Max hrs/wk</th><th></th>
       </tr></thead>
       <tbody>${EMPLOYEES.map((e) => `
-        <tr data-name="${escapeHtml(e.name)}">
+        <tr data-id="${e.id}" data-name="${escapeHtml(e.name)}">
           <td class="left">${escapeHtml(e.name)}</td>
           <td><input type="checkbox" ${e.isLead ? "checked" : ""} data-field="isLead"></td>
           <td><input type="number" min="0" value="${e.minHours}" data-field="minHours"></td>
@@ -219,15 +225,16 @@ async function renderEmployees() {
       renderStaffingPlan();
     };
     tr.querySelector('[data-action="save"]').onclick = async () => {
+      if (folderId !== FOLDER_ID || revision !== VIEW_REVISION || FOLDER_LOADING) return;
       const minimum = tr.querySelector('[data-field="minHours"]');
       const maximum = tr.querySelector('[data-field="maxHours"]');
       if (![minimum, maximum].every(input => input.value.trim() !== "" && Number.isSafeInteger(Number(input.value)) && Number(input.value) >= 0) || Number(minimum.value) > Number(maximum.value)) {
         alert("Enter nonnegative whole hours with minimum no greater than maximum."); return;
       }
-      const revision = VIEW_REVISION, token = TOKEN;
+      const token = TOKEN;
       const controls = [...tr.querySelectorAll("input, button")];
       controls.forEach(el => el.disabled = true);
-      const r = await apiSend(`/api/employees/${encodeURIComponent(name)}`, "PUT", {
+      const r = await apiSend(`/api/folders/${folderId}/employees/${tr.dataset.id}`, "PUT", {
         isLead: tr.querySelector('[data-field="isLead"]').checked,
         minHours: tr.querySelector('[data-field="minHours"]').value,
         maxHours: tr.querySelector('[data-field="maxHours"]').value,
@@ -241,13 +248,29 @@ async function renderEmployees() {
       await refreshDiagnostics();
     };
     tr.querySelector('[data-action="delete"]').onclick = async () => {
-      if (!confirm(`Remove ${name} and their submitted availability?`)) return;
-      const result = await apiSend(`/api/employees/${encodeURIComponent(name)}`, "DELETE");
+      if (folderId !== FOLDER_ID || revision !== VIEW_REVISION || FOLDER_LOADING) return;
+      if (!confirm(`Remove ${name} from this folder? Saved response history and other folders will be preserved.`)) return;
+      const result = await apiSend(`/api/folders/${folderId}/employees/${tr.dataset.id}`, "DELETE");
       if (!result?.ok) { if (result) alert(result.data.error); return; }
       EMPLOYEE_DRAFTS.delete(name);
       await renderEmployees();
-      await refreshDiagnostics();
+      await renderOverview(); await refreshDiagnostics(); await renderWeekendUI();
     };
+  });
+}
+
+async function renderUnassignedEmployees() {
+  const folderId = FOLDER_ID, revision = VIEW_REVISION;
+  if (!folderId) return;
+  const employees = await apiGet('/api/employees/unassigned');
+  if (!Array.isArray(employees) || revision !== VIEW_REVISION) return;
+  $('unassignedEmployees').innerHTML = employees.length ? `<details><summary>Import an employee without a folder</summary><p>These older employee records are not assigned to any folder.</p>${employees.map(e => `<p>${escapeHtml(e.name)} <button class="secondary" data-importemployee="${e.id}">Add to this folder</button></p>`).join('')}</details>` : '';
+  $('unassignedEmployees').querySelectorAll('[data-importemployee]').forEach(button => button.onclick = async () => {
+    if (revision !== VIEW_REVISION || FOLDER_LOADING) return;
+    const response = await apiSend(`/api/folders/${folderId}/employees`, 'POST', {employeeId:Number(button.dataset.importemployee)});
+    if (!response || revision !== VIEW_REVISION) return;
+    if (!response.ok) { alert(response.data.error || 'Could not import employee.'); return; }
+    await renderEmployees(); await refreshDiagnostics(); await renderWeekendUI();
   });
 }
 
@@ -355,6 +378,8 @@ function renderSettings() {
 }
 
 async function saveSettings() {
+  if (!FOLDER_ID || !CONFIG || FOLDER_LOADING) return;
+  const folderId = FOLDER_ID, revision = VIEW_REVISION;
   const updated = { ...CONFIG };
   for (const [, fields] of SETTINGS_GROUPS) {
     for (const [key] of fields) updated[key] = Number($(`cfg_${key}`).value);
@@ -365,13 +390,14 @@ async function saveSettings() {
   updated.allowSelfRegister = $("cfg_allowSelfRegister").checked;
   updated.allowPreferredBoundaryExtras = $("cfg_allowPreferredBoundaryExtras").checked;
 
-  const r = await apiSend("/api/config", "PUT", updated);
+  const r = await apiSend(`/api/folders/${folderId}/config`, "PUT", updated);
   if (!r) return;
   if (!r.ok) {
     $("settingsMsg").innerHTML = `<div class="msg err">${(r.data.errors || ["Couldn't save."])
       .map(escapeHtml).join("<br>")}</div>`;
     return;
   }
+  if (revision !== VIEW_REVISION || folderId !== FOLDER_ID) return;
   CONFIG = r.data;
   $("settingsMsg").innerHTML = `<div class="msg ok">Settings saved.</div>`;
   refreshDiagnostics();
@@ -506,7 +532,9 @@ function renderDiagnostics(payload) {
 }
 
 async function refreshDiagnostics() {
+  const revision = VIEW_REVISION;
   await refreshStaffingPlan();
+  if (revision !== VIEW_REVISION) return;
   if (!TOKEN || !FOLDER_ID) return;
   const payload = await apiGet(`/api/diagnostics?${selectionQuery()}`);
   if (!payload) return;
@@ -741,9 +769,7 @@ async function downloadExcel() {
 
 // ---------------- boot ----------------
 async function bootApp() {
-  CONFIG = await apiGet("/api/config");
-  if (!TOKEN || !CONFIG) return;
-  renderSettings();
+  if (!TOKEN) return;
   await loadFolders();
 }
 
@@ -759,11 +785,13 @@ $("refreshDiagBtn").onclick = refreshDiagnostics;
 $("addEmpBtn").onclick = async () => {
   const name = $("newEmpName").value.trim();
   if (!name) return;
-  const result = await apiSend(`/api/employees/${encodeURIComponent(name)}`, "PUT",
-    { isLead: false, minHours: 0, maxHours: 40 });
+  if (!FOLDER_ID || FOLDER_LOADING) return;
+  const revision = VIEW_REVISION;
+  const result = await apiSend(`/api/folders/${FOLDER_ID}/employees`, "POST", {name});
+  if (revision !== VIEW_REVISION) return;
   if (!result?.ok) { if (result) alert(result.data.error || "Couldn't add employee."); return; }
   $("newEmpName").value = "";
-  await renderEmployees();
+  await renderEmployees(); await renderOverview(); await renderWeekendUI();
   await refreshDiagnostics();
 };
 
@@ -799,6 +827,7 @@ const WKND_SHIFTS = [
 ];
 
 function renderWeekendUI() {
+  if (!FOLDER_ID || !CONFIG) return;
   if (WKND_ROTATING_ORDER.length === 0 && EMPLOYEES.length > 0) {
     WKND_ROTATING_ORDER = EMPLOYEES.map(e => e.id);
   }

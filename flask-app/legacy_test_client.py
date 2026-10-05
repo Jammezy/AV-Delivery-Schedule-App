@@ -10,6 +10,22 @@ os.environ.setdefault('COLLECTION_ENCRYPTION_KEY',Fernet.generate_key().decode()
 os.environ.setdefault('COLLECTION_VERIFIER_KEY',secrets.token_hex(32))
 
 class LegacyFixtureClient(FlaskClient):
+    def open(self, *args, **kwargs):
+        from urllib.parse import urlsplit, parse_qsl, urlencode
+        from models import db, SubmissionState
+        path = args[0] if args and isinstance(args[0], str) else kwargs.get('path', '')
+        split = urlsplit(path)
+        if split.path in ('/api/config','/api/employees','/api/staffing-plan','/api/roster') or split.path.startswith('/api/employees/'):
+            query = dict(parse_qsl(split.query))
+            if 'folderId' not in query:
+                with db.connection_context():
+                    state = SubmissionState.get_by_id(1)
+                    query['folderId'] = state.active_folder_id or ''
+                path = split.path + '?' + urlencode(query)
+                if args: args = (path, *args[1:])
+                else: kwargs['path'] = path
+        return super().open(*args, **kwargs)
+
     def fixture_admin(self):
         import app as web
         login=super().post('/api/admin/login',json={'password':web.ADMIN_PASSWORD})

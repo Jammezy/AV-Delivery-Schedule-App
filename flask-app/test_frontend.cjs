@@ -166,7 +166,7 @@ test('lead settings stay independent, update live, explain ranges and save both 
   }
   let saved;
   dom.window.fetch = async (url, options) => {
-    if (url === '/api/config' && options.method === 'PUT') saved = JSON.parse(options.body);
+    if (url === '/api/folders/1/config' && options.method === 'PUT') saved = JSON.parse(options.body);
     return {ok:true,status:200,json:async()=>saved || {}};
   };
   run('refreshDiagnostics = async () => {}');
@@ -186,17 +186,19 @@ async function planningAdmin() {
   dom.window.alert = message => alerts.push(message);
   dom.window.confirm = () => true;
   dom.window.fetch = async (url, options = {}) => {
-    if (url === '/api/staffing-plan') {
+    if (url === '/api/folders/1/staffing-plan') {
       if (failLoad) throw new Error('offline');
       const allotted = roster.reduce((sum,e)=>sum+e.minHours,0);
       return {ok:true,json:async()=>({employees:structuredClone(roster),requiredHours:required,allottedHours:allotted,remainingHours:required-allotted})};
     }
-    if (url.startsWith('/api/employees/')) {
+    if (url === '/api/employees/unassigned') return {ok:true,json:async()=>[]};
+    if (/^\/api\/folders\/1\/employees/.test(url)) {
       if (failSave) return {ok:false,json:async()=>({error:'Save failed'})};
-      const name = decodeURIComponent(url.split('/').pop());
+      const data = options.body ? JSON.parse(options.body) : {};
+      const id = Number(url.split('/').pop()), name = data.name || roster.find(e=>e.id===id)?.name;
       if (options.method === 'DELETE') roster = roster.filter(e=>e.name!==name);
       else {
-        const data = JSON.parse(options.body), existing = roster.find(e=>e.name===name);
+        const existing = roster.find(e=>e.name===name);
         const employee = {...data,name,id:existing?.id||2,minHours:Number(data.minHours),maxHours:Number(data.maxHours)};
         if (existing) Object.assign(existing,employee); else roster.push(employee);
       }
@@ -204,7 +206,7 @@ async function planningAdmin() {
     }
     throw new Error('Unexpected request: '+url);
   };
-  run('FOLDER_ID=null');
+  run('FOLDER_ID=1;renderOverview=async()=>{};renderWeekendUI=()=>{};');
   await run('renderEmployees()');
   return {dom,run,doc,alerts,setFailSave:v=>failSave=v,setFailLoad:v=>failLoad=v,setRequired:v=>required=v};
 }
@@ -517,7 +519,9 @@ async function deletionAdmin({last=false}={}) {
       return reply({ok:true,deletedFolderId:id});
     }
     if(url==='/api/folders')return reply({folders,activeFolderId:active});
-    if(url==='/api/staffing-plan')return reply({employees:overview.employees,requiredHours:30,allottedHours:10,remainingHours:20});
+    if(url.endsWith('/config'))return reply(config);
+    if(url==='/api/employees/unassigned')return reply([]);
+    if(url.endsWith('/staffing-plan'))return reply({employees:overview.employees,requiredHours:30,allottedHours:10,remainingHours:20});
     if(url.startsWith('/api/availability?'))return reply({...overview,availability:{},submissions:[],comments:{}});
     if(url.startsWith('/api/diagnostics?'))return reply({config});
     if(url.endsWith('/schedules')||url.endsWith('/weekend_schedules'))return reply([]);
@@ -537,7 +541,7 @@ test('deletion dialog shows escaped exact name, counts, preservation, active war
   await doc.getElementById('deleteFolderBtn').onclick();
   const details=doc.getElementById('deleteFolderDetails');
   assert.match(details.textContent,/Fall <2026>/); assert.equal(details.querySelector('strong').textContent,'Fall <2026>'); assert.ok(details.innerHTML.includes('&lt;2026&gt;'));
-  for(const text of ['3 accepted availability','2 saved weekday','4 saved weekend','cannot be undone','roster entries','other folders','stops submissions','No other folder will be activated'])assert.ok(details.textContent.includes(text));
+  for(const text of ['3 accepted availability','2 saved weekday','4 saved weekend','cannot be undone','identities','other folders','stops submissions','No other folder will be activated'])assert.ok(details.textContent.includes(text));
   const input=doc.getElementById('deleteFolderConfirmation'),button=doc.getElementById('deleteFolderConfirmBtn');
   input.value='fall <2026>';input.oninput();assert.equal(button.disabled,true);
   input.value='Fall <2026> ';input.oninput();assert.equal(button.disabled,true);
@@ -557,7 +561,7 @@ test('committed deletion refreshes both lists, clears cached results and edit st
   assert.equal(run('LAST_RESULT'),null);assert.equal(run('LAST_WKND_PREVIEW'),null);assert.equal(run('LAST_DIAG'),null);
   assert.equal(run('SELECTED.size'),0);assert.equal(run('PINNED'),null);assert.equal(run('editAvailEmployee'),null);
   assert.equal(doc.getElementById('editAvailComment').value,'');
-  assert.equal(run('WKND_ROTATING_ORDER.length'),0);assert.equal(run('Object.keys(WKND_FIXED).length'),0);
+  assert.equal(run('WKND_ROTATING_ORDER.length'),3);assert.equal(run('Object.keys(WKND_FIXED).length'),0);
   assert.equal(doc.getElementById('wkndPreviewArea').textContent,'');assert.equal(doc.getElementById('downloadBtn').style.display,'none');
   assert.match(doc.getElementById('savedSchedules').textContent,/No saved/);assert.match(doc.getElementById('wkndSavedSchedules').textContent,/No saved/);
   assert.match(doc.getElementById('diagnosticsStaffingPlan').textContent,/20 hours remaining/);
@@ -565,14 +569,16 @@ test('committed deletion refreshes both lists, clears cached results and edit st
   dom.window.close();
 });
 
-test('final-folder deletion leaves empty state and available shared-roster and creation controls',async()=>{
+test('final-folder deletion disables folder-only controls and permits folder creation',async()=>{
   const {run,doc,dom,requests}=await deletionAdmin({last:true});
   await run('openFolderDeletion()');doc.getElementById('deleteFolderConfirmation').value='Fall <2026>';
   await run('confirmFolderDeletion()');assert.equal(run('FOLDER_ID'),null);
   assert.match(doc.getElementById('overviewArea').textContent,/No folders yet/);
   for(const id of ['deleteFolderBtn','generateBtn','wkndGenerateBtn'])assert.equal(doc.getElementById(id).disabled,true);
-  for(const id of ['createFolderBtn','addEmpBtn'])assert.equal(doc.getElementById(id).disabled,false);
-  assert.match(doc.getElementById('employeesStaffingPlan').textContent,/20 hours remaining/);
+  assert.equal(doc.getElementById('createFolderBtn').disabled,false);
+  assert.equal(doc.getElementById('addEmpBtn').disabled,true);
+  assert.match(doc.getElementById('employeeTableWrap').textContent,/Create or select a folder/);
+  assert.equal(doc.getElementById('employeesStaffingPlan').textContent,'');
   assert.ok(!requests.some(r=>/folderId=(null|0)|folders\/(null|0)/.test(r.url)));
   dom.window.close();
 });
@@ -630,7 +636,7 @@ test('pending weekday, weekend and overview responses cannot repopulate a delete
 test('changing folders on Weekend restores fixed assignments and rotation controls',async()=>{
   const {doc,run,dom}=await admin();
   run(`EMPLOYEES=${JSON.stringify(overview.employees)};FOLDERS=[{id:1,name:'Fall'},{id:2,name:'Winter'}];renderFolderControls();refreshDiagnostics=async()=>{};`);
-  dom.window.fetch=async url=>({ok:true,status:200,json:async()=>url.startsWith('/api/availability?') ? structuredClone(overview) : []});
+  dom.window.fetch=async url=>({ok:true,status:200,json:async()=>url.endsWith('/config') ? config : url.endsWith('/staffing-plan') ? {employees:overview.employees,requiredHours:30,allottedHours:0,remainingHours:30} : url.startsWith('/api/availability?') ? structuredClone(overview) : []});
   doc.querySelector('[data-tab="weekend"]').click();
   assert.equal(doc.querySelectorAll('#wkndFixedTable tbody select').length,6);
   assert.equal(doc.querySelectorAll('#wkndRotatingTable tbody tr').length,3);
@@ -658,6 +664,97 @@ test('changing folders on Weekend restores fixed assignments and rotation contro
   run("updateWkndFixed('friday_evening','')");
   assert.equal(run('WKND_FIXED.friday_evening'),undefined);
   run('moveWkndRotating(0,1)');assert.equal(run('WKND_ROTATING_ORDER[0]'),2);
+  dom.window.close();
+});
+
+async function scopedAdmin() {
+  const t=await admin(), {doc,dom,run}=t;
+  const configs={1:{...config,reqStaffOpen:1},2:{...config,reqStaffOpen:3}};
+  const rosters={1:[{id:1,name:'Alex',minHours:10,maxHours:30,isLead:false}],2:[{id:2,name:'Blair',minHours:20,maxHours:40,isLead:true}]};
+  const writes=[];
+  const reply=data=>({ok:true,status:200,json:async()=>structuredClone(data)});
+  const fetch=async(url,opts={})=>{
+    if(url==='/api/employees/unassigned')return reply([]);
+    const id=Number(url.match(/\/folders\/(\d+)/)?.[1]||url.match(/folderId=(\d+)/)?.[1]);
+    if(opts.method==='PUT') {
+      writes.push({url,body:JSON.parse(opts.body)});
+      if(url.endsWith('/config')) {configs[id]=JSON.parse(opts.body);return reply(configs[id]);}
+      const employee=rosters[id].find(e=>e.id===Number(url.split('/').pop()));
+      Object.assign(employee,JSON.parse(opts.body));return reply(employee);
+    }
+    if(url.endsWith('/config'))return reply(configs[id]);
+    if(url.endsWith('/staffing-plan')) {
+      const allotted=rosters[id].reduce((n,e)=>n+Number(e.minHours),0);
+      return reply({employees:rosters[id],requiredHours:id*50,allottedHours:allotted,remainingHours:id*50-allotted});
+    }
+    if(url.startsWith('/api/availability?'))return reply({employees:rosters[id],availability:{},missing:rosters[id].map(e=>e.name),comments:{},submittedAt:{},submissions:[]});
+    if(url.startsWith('/api/diagnostics?'))return reply({config:configs[id]});
+    if(url.endsWith('/schedules')||url.endsWith('/weekend_schedules'))return reply([]);
+    throw Error('Unexpected scoped request '+url);
+  };
+  dom.window.fetch=fetch;
+  run("FOLDERS=[{id:1,name:'Fall'},{id:2,name:'Winter'}];renderFolderControls();renderDiagnostics=()=>{};");
+  await run('changeFolder()');
+  return {...t,fetch,writes,configs,rosters,reply};
+}
+
+test('folder changes refresh employees, settings, staffing and Weekend without changing the active tab',async()=>{
+  const {doc,run,dom}=await scopedAdmin();
+  doc.querySelector('[data-tab="employees"]').click();
+  assert.match(doc.getElementById('employeeTableWrap').textContent,/Alex/);
+  run("EMPLOYEE_DRAFTS.set('Alex',{minHours:'99'});");
+  doc.getElementById('folderSelect').value='2';await doc.getElementById('folderSelect').onchange();
+  assert.equal(doc.querySelector('.tabs .active').dataset.tab,'employees');
+  assert.match(doc.getElementById('employeeTableWrap').textContent,/Blair/);
+  assert.doesNotMatch(doc.getElementById('employeeTableWrap').textContent,/Alex/);
+  assert.equal(doc.getElementById('cfg_reqStaffOpen').value,'3');
+  assert.match(doc.getElementById('employeesStaffingPlan').textContent,/80 hours remaining/);
+  assert.equal(run('EMPLOYEE_DRAFTS.size'),0);
+  assert.match(doc.getElementById('wkndFixedTable').textContent,/Blair/);
+  assert.doesNotMatch(doc.getElementById('wkndFixedTable').textContent,/Alex/);
+  dom.window.close();
+});
+
+test('late folder loads and saves cannot overwrite the current folder',async()=>{
+  const t=await scopedAdmin(),{doc,run,dom}=t;
+  let release;
+  dom.window.fetch=(url,opts)=>url==='/api/folders/1/config' ? new Promise(resolve=>release=()=>resolve(t.reply(t.configs[1]))) : t.fetch(url,opts);
+  const old=run('changeFolder()');
+  assert.equal(doc.getElementById('saveSettingsBtn').disabled,true);
+  assert.equal(doc.getElementById('employeeTableWrap').textContent,'');
+  doc.getElementById('folderSelect').value='2';await run('changeFolder()');
+  release();await old;
+  assert.equal(doc.getElementById('cfg_reqStaffOpen').value,'3');
+  dom.window.fetch=t.fetch;
+  doc.getElementById('folderSelect').value='1';await run('changeFolder()');
+  const originalSave=doc.querySelector('[data-action="save"]').onclick;
+  dom.window.fetch=(url,opts)=>opts?.method==='PUT' ? new Promise(resolve=>release=()=>t.fetch(url,opts).then(resolve)) : t.fetch(url,opts);
+  doc.querySelector('[data-field="minHours"]').value='15';
+  const pending=originalSave();
+  doc.getElementById('folderSelect').value='2';await run('changeFolder()');
+  release();await pending;
+  assert.equal(t.writes[0].url,'/api/folders/1/employees/1');
+  assert.equal(t.rosters[2][0].minHours,20);
+  assert.match(doc.getElementById('employeeTableWrap').textContent,/Blair/);
+  await originalSave();assert.equal(t.writes.length,1);
+  dom.window.close();
+});
+
+test('settings save targets its captured folder and failed loading keeps editing disabled',async()=>{
+  const t=await scopedAdmin(),{doc,run,dom}=t;
+  doc.getElementById('cfg_reqStaffOpen').value='4';
+  let release;
+  dom.window.fetch=(url,opts)=>opts?.method==='PUT' ? new Promise(resolve=>release=()=>t.fetch(url,opts).then(resolve)) : t.fetch(url,opts);
+  const pending=run('saveSettings()');
+  doc.getElementById('folderSelect').value='2';await run('changeFolder()');
+  release();await pending;
+  assert.equal(t.configs[1].reqStaffOpen,4);assert.equal(t.configs[2].reqStaffOpen,3);
+  assert.equal(doc.getElementById('cfg_reqStaffOpen').value,'3');
+  dom.window.fetch=async()=>{throw Error('offline')};
+  doc.getElementById('folderSelect').value='1';await run('changeFolder()');
+  assert.equal(doc.getElementById('saveSettingsBtn').disabled,true);
+  assert.equal(doc.getElementById('addEmpBtn').disabled,true);
+  assert.equal(doc.getElementById('settingsForm').textContent,'');
   dom.window.close();
 });
 

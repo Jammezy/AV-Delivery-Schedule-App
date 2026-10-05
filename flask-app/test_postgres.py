@@ -47,7 +47,7 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=2) as workers:
     list(workers.map(initialize_worker, range(2)))
 
 import app as web
-from models import db, Folder, FolderAvailability, SavedSchedule, get_config
+from models import db, Folder, FolderAvailability, FolderEmployee, FolderConfig, SavedSchedule, get_config, init_db
 from legacy_test_client import LegacyFixtureClient
 client = LegacyFixtureClient(web.app)
 token = client.post('/api/admin/login',json={'password':'test-admin'}).json['token']
@@ -58,6 +58,13 @@ rows = client.get(f'/api/availability?folderId={spring}',headers=headers).json
 assert len(rows['submissions']) == 1
 assert rows['availability']['Legacy'] == {'Mon_07':2,'Tue_07':1}
 assert get_config()['wFairness'] == 123
+assert get_config(spring)['wFairness'] == 123
+with db.connection_context():
+    assert FolderEmployee.select().where(FolderEmployee.folder == spring).count() == 1
+    assert FolderConfig.select().where(FolderConfig.folder == spring).count() == 1
+init_db()
+with db.connection_context():
+    assert FolderEmployee.select().where(FolderEmployee.folder == spring).count() == 1
 
 def submit(name, ctx=context):
     with LegacyFixtureClient(web.app) as c:
@@ -124,7 +131,7 @@ class PostgresDeletionTests(RetentionTests, FolderDeletionTests, unittest.TestCa
         web.app.config['REQUEST_RETENTION_ENABLED'] = False
         with db.connection_context():
             db.execute_sql('TRUNCATE TABLE adminsession, savedweekendschedule, savedschedule, '
-                'folderavailability, submissionstate, folder, availability, employee, config, ratebucket RESTART IDENTITY CASCADE')
+                'folderavailability, folderemployee, folderconfig, schemamigration, submissionstate, folder, availability, employee, config, ratebucket RESTART IDENTITY CASCADE')
         init_db()
         self.client = LegacyFixtureClient(web.app)
         token = self.client.post('/api/admin/login', json={'password': 'test-admin'}).json['token']

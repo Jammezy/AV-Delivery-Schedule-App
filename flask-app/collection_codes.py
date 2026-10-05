@@ -17,7 +17,7 @@ from flask import abort, jsonify, request
 from models import (db, write_transaction, Employee, Folder, FolderAvailability,
                     SubmissionState, CollectionSettings, CollectionCode,
                     IntakeSubmission, EditGrant, SubmissionSession, RateBucket,
-                    get_config, normalize_level)
+                    get_config, normalize_level, FolderEmployee, folder_members, enroll_employee)
 from boundary import boundary_context, consent_status
 
 MAX_CODE_RESPONSES = 10000
@@ -153,14 +153,15 @@ def linked_current(grant):
     employee = Employee.get_or_none(Employee.id == grant.employee_id) if grant.employee_id else None
     current = FolderAvailability.get_or_none((FolderAvailability.employee == grant.employee_id) &
         (FolderAvailability.folder == grant.folder_id)) if employee and grant.folder_id else None
-    if current is None or grant.folder_id != grant.submission.folder_id:
+    member = folder_members(grant.folder_id).where(FolderEmployee.employee == grant.employee_id).first()
+    if current is None or member is None or grant.folder_id != grant.submission.folder_id:
         abort(404, 'The linked employee or current availability no longer exists in this folder. Ask your supervisor for help.')
     return current
 
 
 def public_context(session=None, token=None, permission_version=None):
     state = SubmissionState.get_by_id(1)
-    cfg = get_config()
+    cfg = get_config(session.code.folder_id if session else state.active_folder_id)
     result = dict(folder={'id': state.active_folder_id, 'name': state.active_folder.name} if state.active_folder_id else None,
                   revision=state.revision, config={k: cfg[k] for k in PUBLIC_FIELDS if k in cfg},
                   boundaryContext=boundary_context(cfg), unlocked=bool(session))
@@ -200,6 +201,7 @@ def save_to_folder(row, permission_version):
         name = f'{base} ({number})'
         number += 1
     employee = Employee.create(name=name)
+    enroll_employee(employee, row.folder_id)
     current = FolderAvailability.create(employee=employee, folder=row.folder,
         data_json=row.data_json, comment=row.comment,
         allow_extra_openings=row.allow_extra_openings, allow_extra_closings=row.allow_extra_closings,
@@ -273,7 +275,7 @@ def register(app, require_admin, permission_version, body, folder_or_404):
         with write_transaction():
             session, _ = session_record(require_csrf=True)
             code = session.code
-            cfg = get_config()
+            cfg = get_config(code.folder_id)
             name, comment, av, explicit = validate_payload(data, cfg, editing=bool(session.edit_grant_id))
             if type(data.get('folderId')) is not int or type(data.get('revision')) is not int or data['folderId'] != code.folder_id or data['revision'] != session.state_revision:
                 abort(409, 'The collection changed. Refresh and confirm the destination.')
@@ -426,8 +428,9 @@ def register(app, require_admin, permission_version, body, folder_or_404):
         with write_transaction():
             fid = request.args.get('folderId', type=int)
             folder_or_404(fid)
-            cfg = get_config()
-            roster = list(Employee.select().order_by(Employee.name))
+            cfg = get_config(fid)
+            roster = [m.employee for m in folder_members(fid)]
+            member_ids = {e.id for e in roster}
             rows = []
             for row in IntakeSubmission.select().where(IntakeSubmission.folder == fid).order_by(IntakeSubmission.id.desc()):
                 candidate = next((e for e in roster if e.name.casefold() == row.name.casefold()), None)
@@ -439,7 +442,7 @@ def register(app, require_admin, permission_version, body, folder_or_404):
                     candidateEmployeeId=candidate.id if candidate else None, employeeId=row.employee_id,
                     acceptedVersion=permission_version(accepted) if accepted else None, parentId=row.parent_id,
                     codeId=row.code_id, codeLabel=row.code.label,
-                    canCreateEditLink=bool(accepted and code_status(row.code) == 'Active'),
+                    canCreateEditLink=bool(accepted and accepted_id in member_ids and code_status(row.code) == 'Active'),
                     canRevokeEditLinks=bool(accepted),
                     consent=consent_status(json.loads(row.data_json), recorded, cfg)))
             return jsonify(submissions=rows, employees=[dict(id=e.id, name=e.name) for e in roster],
@@ -468,7 +471,8 @@ def register(app, require_admin, permission_version, body, folder_or_404):
             eid = data.get('employeeId')
             if type(eid) is not int:
                 abort(400, 'Choose an employee from the roster. Add the employee first if needed.')
-            employee = Employee.get_or_none(Employee.id == eid)
+            member = folder_members(row.folder_id).where(FolderEmployee.employee == eid).first()
+            employee = member.employee if member else None
             if not employee:
                 abort(404, 'Employee not found.')
             accepted = FolderAvailability.get_or_none((FolderAvailability.employee == eid) & (FolderAvailability.folder == row.folder_id))
@@ -497,6 +501,8 @@ def register(app, require_admin, permission_version, body, folder_or_404):
             if not row:
                 abort(404, 'Submission not found.')
             check_code(row.code)
+            if not folder_members(row.folder_id).where(FolderEmployee.employee == row.employee_id).exists():
+                abort(404, 'Employee no longer belongs to this folder.')
             if not row.employee_id or not FolderAvailability.get_or_none(
                     (FolderAvailability.employee == row.employee_id) & (FolderAvailability.folder == row.folder_id)):
                 abort(404, 'The linked employee or current availability no longer exists in this folder.')
