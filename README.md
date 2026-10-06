@@ -1,76 +1,146 @@
-# AV Delivery App
+# AV Delivery Schedule App
 
-The AV Delivery App is a scheduling tool designed to generate fair and valid weekly shift schedules for employees. It provides a web-based frontend where employees can submit their availability and preferences, and an administrative dashboard where supervisors can generate, view, and manage schedules.
+A web app for collecting employee availability and creating weekday and weekend
+delivery schedules. Employees enter a shared collection code and paint the hours
+they can work or would prefer. Supervisors manage collection, rosters, settings,
+and saved schedules in a password-protected dashboard.
 
-Under the hood, the app employs an operations research approach using the OR-Tools CP-SAT solver to navigate complex staffing requirements and employee preferences.
+The Flask backend serves the HTML/CSS/JavaScript frontend and stores records with
+Peewee. Weekday scheduling uses Google's OR-Tools CP-SAT solver; weekend scheduling
+uses a separate fixed-shift rotation generator. Local development can use SQLite;
+the hosted app uses Render with PostgreSQL on Neon.
 
-## Application Logic and Flow
+- [Employee form](https://av-delivery-schedule-app.onrender.com/)
+- [Supervisor dashboard](https://av-delivery-schedule-app.onrender.com/admin.html)
+- [Setup, configuration, maintenance, and tests](flask-app/README.md)
 
-1. **Configuration:** The administrator configures the constraints for the week (e.g., store hours, required staff per hour, minimum/maximum shift lengths, and maximum shifts per person).
-2. **Employee Submissions:** Employees visit the frontend to "paint" their availability onto a weekly grid. They can mark hours as:
-   - **Unavailable** (cannot work)
-   - **Available** (can work)
-   - **Preferred** (wants to work)
-3. **Pre-check and Diagnostics:** Before generating a schedule, the app calculates coverage against the constraints. It detects impossibilities (e.g., "Tuesday 7 AM needs 4 people but only 3 are available") and highlights them to the admin so they can adjust requirements if necessary.
-4. **Schedule Generation:** The admin requests a schedule. The backend invokes the solver to search for a valid configuration of shifts.
-5. **Review and Publish:** The generated schedule is displayed in the dashboard, complete with fairness scores and diagnostics. It can be saved, exported to Excel, or regenerated with tweaked rules.
+## Collection and supervisor workflow
 
-## Schedule Generator Logic
+1. **Create or select a scheduling folder.** Each folder has its own roster,
+   employee lead/hour attributes, scheduling settings, collection codes,
+   availability, and saved schedules. New folders start with an empty roster and
+   default settings. Selecting a folder changes the dashboard context; it does
+   not change where existing collection codes save responses.
+2. **Create a code in Codes and copy its invitation.** Each new code allows
+   30 successful responses shared by everyone using it. Supervisors can add
+   responses to that code or create another. The separate cumulative folder
+   limit defaults to 100 for folders without a saved limit; existing saved limits
+   are preserved. Raising a code's allowance does not raise the folder limit.
+3. **Employees submit availability.** No employee account is needed. A valid code
+   unlocks one submission, which saves automatically into that code's folder.
+   Each ordinary submission creates a separate employee entry, including repeated
+   names with numbered suffixes. Another sheet requires entering a code again.
+4. **Review current availability and history.** Submissions opens with current
+   availability. Supervisors can inspect preserved responses in the searchable
+   response-history dialog, edit current availability and comments, and manage
+   additional-shift permissions separately. A supervisor-created edit link lets
+   an employee correct the same linked employee record and adds a correction to
+   history; typing the same name into a new submission does not perform an edit.
+5. **Check and generate schedules.** Set folder-specific hours, staffing,
+   shift rules, and employee lead/minimum/maximum hours. Select submitted
+   employees for weekday diagnostics and generation. Successful weekday results
+   are saved automatically. Review and export them to Excel, or use Weekend for
+   dated fixed assignments and rotation, then explicitly save its preview.
 
-The core of the schedule generation is powered by the `Schedule_Maker_4000.py` logic, now integrated into the `solver.py` module using Google's **OR-Tools CP-SAT solver**.
+Codes may accept submissions into several folders at once. Revoking a code or
+archiving its folder stops submissions. Archiving retains records until the
+retention policy applies; permanent folder deletion uses a separate confirmation
+with the folder's exact name and current record counts.
 
-The weekday solver uses ordered objectives: maximize the minimum employee deal
-score, then preferred hours, then minimize normal boundary-cap overruns, then
-share opening/closing duties. Earlier scores cannot worsen during later stages.
-One total deadline applies; a valid incumbent survives a later timeout.
+See [collection codes and edit links](flask-app/COLLECTION_CODES.md) and
+[folder isolation](flask-app/FOLDER_ISOLATION.md) for implementation details.
+The application guide describes current behavior where older review documents
+contain rollout notes.
 
-Employees may separately consent to additional fully preferred openings and
-closings when the supervisor enables the feature. The recorded agreement is
-folder-specific and must be reconfirmed after relevant caps or blocks change.
-See [implementation and review guide](flask-app/PREFERRED_BOUNDARY_CONSENT.md).
+## Availability and weekday scheduling
 
-## Fairness Scoring
+Availability uses three levels: **0** = unavailable, **1** = can work,
+**2** = would prefer. Preferred hours also count as available. The form collects
+weekdays and weekends; the CP-SAT schedule and its export cover Monday–Friday.
 
-The objective function of the solver isn't just to maximize the total number of preferred hours granted. A naive maximization would give one person 96% of their preferred hours while another gets only 17%. Instead, the solver maximizes the **lowest deal score** on the roster, effectively raising the floor so everyone gets a fair schedule.
+The weekday model enforces availability, hourly staffing, contiguous daily shifts,
+minimum/maximum shift length, employee weekly hour bounds, opening/closing caps,
+optional clopening restrictions, and independently controlled day/late lead
+coverage. Closing-hour settings determine which hours need staffing.
 
-An employee's **deal score** is calculated based on two factors:
+Its objectives run in this fixed order:
 
-1. **Preference Satisfaction (Normalized):**
-   Employees are scored against their own realistic ceiling.
-   ```
-   pref_score = 1000 × (preferred hours received) / (realistic ceiling of preferred hours)
-   ```
-   The ceiling is capped by their maximum weekly hours and the longest legal week they could work. This normalizes the score: someone who asks for 5 preferred hours and gets 4 is scored better than someone who asks for 40 and gets 20.
+1. Maximize the lowest employee deal score.
+2. Maximize total preferred hours assigned without reducing that fairness score.
+3. Minimize opening/closing cap overruns allowed by qualifying permissions.
+4. Spread opening/closing duties across employees.
 
-2. **Shift Burden (Weighted by Scarcity):**
-   Working hours that nobody wants is considered a "burden". Every open hour is weighted by how scarce volunteers are.
-   ```
-   burden = 10 × max(0, staff_needed - people_who_prefer_it) / staff_needed
-   ```
-   An hour that 4 people are needed for but 0 people want has a maximum burden weight. An hour that everyone wants has a burden weight of 0.
+All stages share one time budget. Later stages run only after the earlier
+objective is proven optimal. A feasible schedule is retained if a later stage
+times out, with a note describing which optimality guarantees were achieved.
+The legacy `wFairness`, `wPreference`, and `wSpread` keys do not change this order.
 
-**Combined Deal Score:**
+### Fairness scoring
+
+For each employee, the preference denominator is the minimum of preferred staffed
+hours marked, their maximum weekly hours, and
+`maxShiftLength × number of weekdays`. This is a scoring ceiling, not an exact
+availability-aware calculation of the longest feasible week.
+
+```text
+preferenceScore = floor(1000 × preferred hours assigned / preference ceiling)
+hourBurden = round(10 × max(0, staff needed − employees preferring the hour) / staff needed)
+dealScore = preferenceScore − burdenWeight × total assigned burden
 ```
-deal_score = pref_score - (burden_weight × total_burden_points_worked)
-```
-Because the solver maximizes the lowest deal score, if an employee covers an unwanted Thursday 7 AM shift, their deal score drops. To raise the lowest score back up, the solver is forced to compensate that employee by granting them more of their preferred hours elsewhere in the week.
 
-## Changeable Constraints
+Unstaffed hours have no burden. An employee with a zero preference ceiling uses
+a preference score of 1000 and is compared on burden. Raising the lowest deal
+score encourages compensation for covering less popular hours within the hard
+constraints; it does not guarantee an equal schedule or a particular percentage
+of preferred hours. The dashboard and weekday Excel export show per-person
+fairness results.
 
-The schedule generator is highly configurable. Admins can tweak the following rules to adapt to different weeks or staffing levels:
+### Additional preferred opening and closing shifts
 
-* **Operating Hours:** `hourStart` and `hourEnd` define the open window for the schedule.
-* **Staffing Levels:** `reqStaffOpen` (standard hours) and `reqStaffLate` (late hours starting at `lateHourStart`).
-* **Shift Lengths:** `minShiftLength` (e.g., minimum 3 hours) and `maxShiftLength` (e.g., maximum 6 hours).
-* **Weekly Hours per Employee:** Individual `minHours` and `maxHours` (set per employee in the roster).
-* **Shift Caps:**
-  * `maxMorningShifts`: Max opening shifts per person per week.
-  * `maxEveningShifts`: Max closing shifts per person per week.
-  * `maxMorningPlusEvening`: Max combined opening/closing shifts per week.
-* **Clopening:** `blockClopening` prevents scheduling an employee for a closing shift followed by an opening shift the next morning.
-* **Lead Coverage:** `requireLeadDuringOpen` (on by default) requires a lead in every staffed hour before `lateHourStart`. The independent `requireLeadDuringLate` switch (off by default) requires a lead from `lateHourStart` through the last staffed hour when enabled. Either switch can be used on its own; closed and unstaffed hours are exempt. Settings labels and help follow the configured hours immediately.
-* **Fairness:** `burdenWeight` controls the cost of scarce preferred coverage. Objective priorities are fixed; legacy trade-off weights no longer change weekday priority order.
+The optional `allowPreferredBoundaryExtras` setting defaults to off. When enabled,
+recorded opening and closing permissions can allow qualifying fully preferred
+boundary blocks to exceed their normal individual and combined caps. Weekly
+hours, availability, shift lengths, and other hard constraints still apply.
 
-## Running the App
+Employees choose opening and closing permissions separately; supervisors can
+explicitly save them through the separate permission controls. Shift-length
+changes keep permission recorded while recalculating qualifying blocks. Changed
+caps or staffed boundaries require reconfirmation. Extra shifts are optional
+and are never guaranteed. See the [boundary scheduling guide](flask-app/README.md#additional-shift-permissions).
 
-For detailed setup instructions for running the Flask backend and the employee frontend, please see the `flask-app/README.md` file.
+## Weekend schedules
+
+The Weekend tab schedules a date range using recurring Friday evening, Saturday,
+and Sunday shifts, excluded dates, fixed assignments, and a rotating employee
+pool. An employee must be available for the full shift and can work at most one
+shift in a given weekend. This generator uses its own rotation logic rather than
+the weekday fairness objectives or weekly hour/lead constraints. Unfilled shifts
+are reported, and previews can be saved and reopened separately. Excel export
+currently covers weekday schedules.
+
+## Persistence, retention, and hosting
+
+Availability, response history, folders, settings, server-side admin sessions,
+and schedule snapshots are stored in the database. Saved weekday snapshots keep
+the original inputs and results; reopening them does not regenerate with today's
+settings.
+
+**Scheduling records are not kept indefinitely.** Normal API requests trigger
+bounded cleanup of eligible records strictly older than **18 calendar months**
+in UTC. Current availability ages from its latest save; response history and
+schedule snapshots retain their own timestamps. Older folders remain while they
+contain retained children. No cleanup runs while the website is unused, and
+exports, backups, and provider restore history are separate copies.
+
+Render's Free service sleeps after 15 idle minutes and wakes on a visit, usually
+taking about a minute. Neon compute also wakes automatically on a database query.
+Sleep does not replace the application's retention policy. Usage limits, account
+state, and provider policies still apply. See
+[Render's free-service documentation](https://render.com/docs/free) and
+[Neon's scale-to-zero documentation](https://neon.com/docs/introduction/scale-to-zero).
+
+For startup, use a unique `ADMIN_PASSWORD` and configure
+`COLLECTION_ENCRYPTION_KEY` and `COLLECTION_VERIFIER_KEY` for collection codes.
+Hosted storage needs a persistent `DATABASE_URL`; Render's local filesystem
+cannot preserve SQLite records across restarts or sleep. See the
+[application guide](flask-app/README.md) for complete setup and backup instructions.
