@@ -45,7 +45,8 @@ const server=spawn(python,['app.py'],{cwd:__dirname,env,stdio:'ignore'});
  assert.match(await employee.locator('#codeGate').innerText(),/Enter the code your supervisor provided/);
  assert.ok(!(await employee.locator('main').innerText()).includes('generator still schedules weekdays only'));
  await employee.locator('#collectionCode').fill(code.code);await employee.locator('#unlockBtn').click();await employee.locator('#availabilityForm').waitFor({state:'visible'});
- assert.match(await employee.locator('#codeResponseAllowance').innerText(),/30 responses total/);assert.match(await employee.locator('#collectionDestination').innerText(),/Imported availability/);
+ assert.doesNotMatch(await employee.locator('#availabilityForm').innerText(),/This code allows/);assert.match(await employee.locator('#collectionDestination').innerText(),/Imported availability/);
+ assert.equal(await employee.locator('#commentInput').locator('..').locator('.hint').innerText(),'Please do not include sensitive personal information.');
  assert.equal(await employee.locator('#loadBtn').count(),0);assert.equal(await employee.locator('#rosterList').count(),0);
  await employee.locator('#nameInput').fill('Alex');await employee.locator('[data-key="Mon_07"]').focus();await employee.keyboard.press('Space');await employee.locator('#commentInput').fill('<img src=x onerror=alert(1)>');
  await employee.locator('#submitBtn').click();await employee.waitForFunction(()=>document.querySelector('#msgArea').textContent.includes('Saved'));
@@ -79,7 +80,7 @@ const server=spawn(python,['app.py'],{cwd:__dirname,env,stdio:'ignore'});
  // An already open form refreshes the allowance before sending, without losing its draft.
  await employee.locator('#newSheetBtn').click();assert.equal(await employee.locator('#submitBtn').isDisabled(),true);await employee.locator('#collectionCode').fill(code.code);await employee.locator('#unlockBtn').click();await employee.locator('#codeGate').waitFor({state:'hidden'});await employee.locator('#nameInput').fill('Fresh allowance');await employee.locator('#commentInput').fill('Keep this draft');
  await employee.locator('#submitBtn').click();await employee.waitForFunction(()=>SAVED && CONTEXT.responseLimit===32);
- assert.match(await employee.locator('#codeResponseAllowance').innerText(),/32 responses total/);assert.equal(await employee.locator('#commentInput').inputValue(),'Keep this draft');
+ assert.doesNotMatch(await employee.locator('#availabilityForm').innerText(),/This code allows/);assert.equal(await employee.locator('#commentInput').inputValue(),'Keep this draft');
  assert.equal(await admin.evaluate(id=>CODE_ROWS.find(c=>c.id===id).responseLimit,second.id),30);
  await admin.reload();await admin.locator('#appArea').waitFor({state:'visible'});await admin.locator('[data-tab="codes"]').click();await admin.locator('#codesFolderSelect').selectOption(String(code.folderId));
  await admin.waitForFunction(()=>CODE_ROWS.some(c=>c.responseLimit===32 && c.remaining===1));

@@ -256,8 +256,6 @@ let CSRF = null, REQUEST_ID = null, LAST_PAYLOAD = null, SAVED = false;
 
 function updateCollectionDetails() {
   $("collectionDestination").textContent = CONTEXT?.unlocked ? `Submitting to scheduling folder: ${CONTEXT.folder?.name || "Folder closed"}` : "";
-  $("codeResponseAllowance").textContent = CONTEXT?.unlocked && CSRF && Number.isInteger(CONTEXT.responseLimit)
-    ? `No account needed. This code allows up to ${CONTEXT.responseLimit} responses total, shared by everyone using it.` : "";
 }
 
 function useContext(next) {
