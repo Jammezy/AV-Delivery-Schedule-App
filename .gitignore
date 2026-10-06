@@ -7,3 +7,8 @@ node_modules/
 *.db-shm
 *.log
 test-browser-output/
+
+# Local credentials and machine-specific configuration
+.env
+.env.*
+!.env.example

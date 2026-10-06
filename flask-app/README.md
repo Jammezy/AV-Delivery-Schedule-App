@@ -231,7 +231,7 @@ The form refreshes the server's code destination and allowance context without
 discarding draft answers. It does not display the old explanatory
 response-limit notice. Server enforcement remains in place.
 
-See [COLLECTION_CODES.md](COLLECTION_CODES.md) for the feature's API, storage,
+See [COLLECTION_CODES.md](../docs/design/COLLECTION_CODES.md) for the feature's API, storage,
 security, and regression details; its pre-merge notes describe the historical
 rollout rather than a still-pending feature.
 
@@ -279,7 +279,7 @@ Invalid combinations such as a minimum shift longer than the maximum are rejecte
 check or a roster-only gate for the current shared-code submission flow.
 Possession of a valid code authorizes a new, separate entry.
 
-See [FOLDER_ISOLATION.md](FOLDER_ISOLATION.md) for membership storage, scoped API
+See [FOLDER_ISOLATION.md](../docs/design/FOLDER_ISOLATION.md) for membership storage, scoped API
 routes, and the one-time migration.
 
 ## Current availability and response history
@@ -345,7 +345,7 @@ the feature prevents exceptions without erasing recorded choices. Additional
 shifts remain optional, and higher-priority fairness cannot be traded away to
 assign them.
 
-[PREFERRED_BOUNDARY_CONSENT.md](PREFERRED_BOUNDARY_CONSENT.md) explains the original
+[PREFERRED_BOUNDARY_CONSENT.md](../docs/design/PREFERRED_BOUNDARY_CONSENT.md) explains the original
 solver design and review. This section and the current `boundary.py` /
 `test_boundary.py` describe the later persistent-permission behavior.
 
@@ -652,7 +652,7 @@ python test_collection_postgres.py
 ```
 
 See those files for the remaining test-server defaults.
-[Scheduling regression checks](../.github/workflows/folder-deletion-tests.yml)
+[Scheduling regression checks](../.github/workflows/regression-tests.yml)
 runs on pull requests targeting `master` and manual dispatch using Python 3.12,
 Node 22, and a local PostgreSQL 16 service. It runs the backend, solver,
 frontend, PostgreSQL, and browser checks above without production credentials.
