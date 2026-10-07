@@ -40,6 +40,30 @@ app.app.run(host='127.0.0.1',port=5126,use_reloader=False)
     for(const date of ['2026-09-11','2026-09-20']) {
       await page.locator('#newExclDate').fill(date);await page.locator('#newExclLabel').fill('Additional hours');await page.locator('#addExclBtn').click();
     }
+    await page.locator('#wkndRotatingTable tbody tr').nth(2).getByRole('button',{name:'Up',exact:true}).click();
+    await page.locator('#wkndShiftPerson').uncheck();
+    const choices=await page.evaluate(()=>weekendFormChoices());
+    await page.locator('#wkndSaveChoicesBtn').click();
+    await page.waitForFunction(()=>document.querySelector('#wkndChoicesMsg').textContent.includes('saved for this folder'));
+    await page.locator('[data-tab="employees"]').click();
+    const rows=page.locator('#employeeTableWrap tbody tr');
+    await rows.nth(0).locator('[data-field="isLead"]').check();
+    await rows.nth(0).locator('[data-field="minHours"]').fill('12');
+    await rows.nth(0).locator('[data-field="maxHours"]').fill('15');
+    await rows.nth(1).locator('[data-field="minHours"]').fill('9');
+    await rows.nth(1).locator('[data-field="maxHours"]').fill('15');
+    await page.locator('#saveAllEmployeesBtn').click();
+    await page.waitForFunction(()=>document.querySelector('#employeesSaveMsg').textContent.includes('All employee choices saved'));
+    await page.reload();await page.waitForFunction(()=>!FOLDER_LOADING&&STAFFING_PLAN);
+    await page.locator('[data-tab="employees"]').click();
+    assert.equal(await rows.nth(0).locator('[data-field="isLead"]').isChecked(),true);
+    assert.equal(await rows.nth(0).locator('[data-field="minHours"]').inputValue(),'12');
+    assert.equal(await rows.nth(1).locator('[data-field="minHours"]').inputValue(),'9');
+    assert.equal(await rows.getByRole('button',{name:'Remove',exact:true}).count(),6);
+    await page.locator('#tab-employees').screenshot({path:path.join(output,'employees-save-all.png')});
+    await page.locator('[data-tab="weekend"]').click();
+    assert.deepEqual(await page.evaluate(()=>weekendFormChoices()),choices);
+    await page.locator('#tab-weekend').screenshot({path:path.join(output,'weekend-save-choices.png')});
     await page.locator('#wkndGenerateBtn').click();await page.waitForSelector('#wkndDownloadBtn');
     const data=await page.evaluate(()=>LAST_WKND_PREVIEW);
     assert.equal(data.signup_shifts.length,3);
@@ -69,6 +93,6 @@ app.app.run(host='127.0.0.1',port=5126,use_reloader=False)
     assert.ok(mobile.scrollWidth<=mobile.width,JSON.stringify(mobile));
     await page.locator('.weekend-formatted').screenshot({path:path.join(output,'weekend-mobile.png')});
     assert.deepEqual(errors,[]);
-    console.log('Weekend browser: generated, saved, reopened, downloaded and checked desktop/mobile layouts.');
+    console.log('Weekend browser: saved folder choices and whole roster, reloaded, generated, saved, reopened, downloaded and checked desktop/mobile layouts.');
   } finally {if(browser)await browser.close();server.kill();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

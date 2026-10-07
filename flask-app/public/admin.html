@@ -96,7 +96,7 @@
         <div id="wkndExcludedList"></div>
         <div class="row">
           <input type="date" id="newExclDate">
-          <input type="text" id="newExclLabel" placeholder="Holiday label (optional)">
+          <input type="text" id="newExclLabel" maxlength="200" placeholder="Holiday label (optional)">
           <button id="addExclBtn" class="secondary">Add excluded date</button>
         </div>
       </div>
@@ -131,8 +131,10 @@
       </div>
 
       <div class="row">
+        <button id="wkndSaveChoicesBtn">Save weekend choices</button>
         <button id="wkndGenerateBtn">Generate preview</button>
       </div>
+      <p id="wkndChoicesMsg" role="status" aria-live="polite"></p>
 
       <div id="wkndMsg"></div>
       <div id="wkndPreviewArea" style="margin-top:16px;"></div>
@@ -150,6 +152,10 @@
         <button id="addEmpBtn" class="secondary">Add</button>
       </div>
       <div class="scroll-x" id="employeeTableWrap"></div>
+      <div class="row" style="margin-top:16px;">
+        <button id="saveAllEmployeesBtn">Save all employees</button>
+      </div>
+      <p id="employeesSaveMsg" role="status" aria-live="polite"></p>
       <div id="unassignedEmployees"></div>
     </section>
 

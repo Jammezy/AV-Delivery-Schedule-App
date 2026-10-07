@@ -265,13 +265,63 @@ def put_config(folder_id=None):
     folder = requested_folder(folder_id)
     data = body()
     data['days'] = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']
-    for key in ('availabilityDays', 'boundaryConsents', 'boundaryConsentFolderId'):
+    for key in ('availabilityDays', 'boundaryConsents', 'boundaryConsentFolderId', 'weekendChoices'):
         data.pop(key, None)
     with write_transaction():
         updated, errors = save_config(data, folder.id)
     if errors:
         return jsonify(errors=errors, config=updated), 400
     return jsonify(updated)
+
+
+@app.put('/api/folders/<int:folder_id>/weekend-choices')
+@require_admin
+def save_weekend_choices(folder_id):
+    data = body()
+    def date_value(value, optional=False):
+        if optional and value == '':
+            return value
+        if not isinstance(value, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', value):
+            abort(400, 'Choose valid weekend dates.')
+        try:
+            datetime.date.fromisoformat(value)
+        except ValueError:
+            abort(400, 'Choose valid weekend dates.')
+        return value
+
+    start = date_value(data.get('start_date', ''), optional=True)
+    end = date_value(data.get('end_date', ''), optional=True)
+    if start and end and start > end:
+        abort(400, 'End date must be on or after start date.')
+    exclusions = data.get('excluded_dates', [])
+    fixed = data.get('fixed_assignments', {})
+    order = data.get('rotating_employees', [])
+    shifting = data.get('shift_starting_person', True)
+    if not isinstance(exclusions, list) or not isinstance(fixed, dict) or not isinstance(order, list) or type(shifting) is not bool:
+        abort(400, 'Invalid weekend choices.')
+    cleaned_exclusions = []
+    for item in exclusions:
+        if not isinstance(item, dict) or not isinstance(item.get('label', ''), str) or len(item.get('label', '')) > 200:
+            abort(400, 'Use an excluded date with a note of up to 200 characters.')
+        cleaned_exclusions.append({'date': date_value(item.get('date')), 'label': item.get('label', '')})
+    if any(key not in {s['key'] for s in weekend_generator.SHIFTS} for key in fixed):
+        abort(400, 'Choose a valid fixed weekend shift.')
+    selected = list(fixed.values()) + order
+    if any(type(eid) is not int for eid in selected) or len(set(order)) != len(order):
+        abort(400, 'Use employee IDs and a rotation order without duplicates.')
+    choices = dict(start_date=start, end_date=end, excluded_dates=cleaned_exclusions,
+                   fixed_assignments=fixed, rotating_employees=order, shift_starting_person=shifting)
+    with write_transaction():
+        folder_or_404(folder_id)
+        ids = {m.employee_id for m in folder_members(folder_id)}
+        if any(eid not in ids for eid in selected):
+            abort(409, 'The roster changed. Refresh this folder before saving weekend choices.')
+        cfg = get_config(folder_id)
+        cfg['weekendChoices'] = choices
+        row, _ = FolderConfig.get_or_create(folder=folder_id, defaults={'data_json': '{}'})
+        row.data_json = json.dumps(cfg)
+        row.save()
+    return jsonify(choices)
 
 
 @app.get('/api/roster')
@@ -353,6 +403,30 @@ def add_folder_employee(folder_id):
             employee = Employee.create(name=name)
         member = enroll_employee(employee, folder.id)
     return jsonify(serialize(member)), 201
+
+
+@app.put('/api/folders/<int:folder_id>/employees')
+@require_admin
+def update_all_folder_employees(folder_id):
+    entries = body().get('employees')
+    if not isinstance(entries, list):
+        abort(400, 'Provide the employee roster.')
+    validated = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or type(entry.get('id')) is not int or entry['id'] in validated:
+            abort(400, 'Provide each employee once with a valid ID.')
+        if type(entry.get('isLead')) is not bool:
+            abort(400, 'Lead status must be a boolean.')
+        validated[entry['id']] = (entry['isLead'], *employee_values(entry))
+    with write_transaction():
+        folder_or_404(folder_id)
+        members = list(folder_members(folder_id))
+        if set(validated) != {m.employee_id for m in members}:
+            abort(409, 'The roster changed. Refresh this folder before saving all employees.')
+        for member in members:
+            member.is_lead, member.min_hours, member.max_hours = validated[member.employee_id]
+            member.save(only=[FolderEmployee.is_lead, FolderEmployee.min_hours, FolderEmployee.max_hours])
+    return jsonify([serialize(m) for m in members])
 
 
 @app.put('/api/folders/<int:folder_id>/employees/<int:employee_id>')

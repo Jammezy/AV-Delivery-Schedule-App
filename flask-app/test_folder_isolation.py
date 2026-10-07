@@ -52,6 +52,52 @@ class FolderIsolationTests(unittest.TestCase):
         with db.connection_context():
             FolderAvailability.create(folder=folder, employee=employee, data_json=json.dumps({'Mon_07':2,'Sat_07':1}))
 
+    def test_bulk_employee_save_is_atomic_and_folder_scoped(self):
+        alex = self.add(self.a, 'Alex'); blair = self.add(self.a, 'Blair')
+        with db.connection_context(): enroll_employee(Employee.get_by_id(alex['id']), self.b)
+        entries = [dict(id=alex['id'], isLead=True, minHours=12, maxHours=15),
+                   dict(id=blair['id'], isLead=False, minHours=9, maxHours=15)]
+        before = self.get(self.a, 'employees').json
+        invalid = [entries[0], {**entries[1], 'minHours':16}]
+        self.assertEqual(self.put(self.a, 'employees', {'employees':invalid}).status_code, 400)
+        self.assertEqual(self.get(self.a, 'employees').json, before)
+        for bad in [entries[:1], [entries[0], entries[0]], [entries[0], {**entries[1], 'id':99999}]]:
+            self.assertIn(self.put(self.a, 'employees', {'employees':bad}).status_code, (400,409))
+            self.assertEqual(self.get(self.a, 'employees').json, before)
+        self.assertEqual(self.put(self.a, 'employees', {'employees':entries}).status_code, 200)
+        init_db()
+        self.assertEqual(self.get(self.a, 'staffing-plan').json['allottedHours'], 21)
+        self.assertTrue(self.get(self.a, 'employees').json[0]['isLead'])
+        self.assertEqual(self.get(self.b, 'staffing-plan').json['allottedHours'], 0)
+        self.assertFalse(self.get(self.b, 'employees').json[0]['isLead'])
+        self.client.delete(f'/api/folders/{self.a}/employees/{blair["id"]}', headers=self.headers)
+        self.assertEqual(self.put(self.a, 'employees', {'employees':entries}).status_code, 409)
+        self.assertEqual(self.get(self.a, 'staffing-plan').json['allottedHours'], 12)
+
+    def test_weekend_choices_persist_and_reject_invalid_or_foreign_ids(self):
+        alex = self.add(self.a, 'Alex'); blair = self.add(self.a, 'Blair'); foreign = self.add(self.b, 'Other')
+        choices = dict(start_date='2026-09-04', end_date='2026-12-20',
+                       excluded_dates=[{'date':'2026-11-27','label':'Signup hours'}],
+                       fixed_assignments={'saturday_morning':alex['id']},
+                       rotating_employees=[blair['id'],alex['id']], shift_starting_person=False)
+        self.assertEqual(self.put(self.a, 'weekend-choices', choices).status_code, 200)
+        # Saving weekday settings cannot overwrite stored weekend choices.
+        self.assertEqual(self.put(self.a, 'config', {'reqStaffOpen':3,'weekendChoices':{}}).status_code, 200)
+        init_db()
+        self.assertEqual(self.get(self.a, 'config').json['weekendChoices'], choices)
+        self.assertNotIn('weekendChoices', self.get(self.b, 'config').json)
+        for patch_data in [{'rotating_employees':[foreign['id']]},
+                           {'fixed_assignments':{'friday_evening':foreign['id']}},
+                           {'rotating_employees':[alex['id'],alex['id']]},
+                           {'fixed_assignments':{'invalid':alex['id']}},
+                           {'start_date':'2026-02-30'}, {'end_date':'2026-01-01'},
+                           {'excluded_dates':[{'date':'bad'}]}, {'shift_starting_person':'false'}]:
+            self.assertIn(self.put(self.a, 'weekend-choices', {**choices,**patch_data}).status_code, (400,409))
+            self.assertEqual(self.get(self.a, 'config').json['weekendChoices'], choices)
+        self.assertEqual(self.put(99999, 'weekend-choices', choices).status_code, 404)
+        self.assertEqual(self.client.put(f'/api/folders/{self.a}/weekend-choices', json=choices).status_code, 401)
+        self.assertEqual(self.client.put(f'/api/folders/{self.a}/employees', json={'employees':[]}).status_code, 401)
+
     def test_roster_and_staffing_only_include_selected_folder(self):
         alex = self.add(self.a, 'Alex'); blair = self.add(self.b, 'Blair')
         self.assertEqual([e['id'] for e in self.get(self.a,'employees').json],[alex['id']])
