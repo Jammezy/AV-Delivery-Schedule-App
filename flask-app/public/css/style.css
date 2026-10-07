@@ -302,6 +302,7 @@ table.data-table tbody tr:nth-child(even) { background: #fafbfc; }
 }
 
 .scroll-x { overflow-x: auto; }
+#savedSchedules { display:grid; gap:12px; margin:12px 0 20px; }
 .settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
 .settings-group { border: 1px solid var(--border-soft); border-radius: 6px; padding: 12px 14px; }
 .settings-group h3 { margin-top: 0; }
