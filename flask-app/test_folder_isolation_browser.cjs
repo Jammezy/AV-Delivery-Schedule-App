@@ -2,6 +2,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {spawn,spawnSync}=require('node:child_process');
 const {chromium}=require('playwright');
+const {randomUUID}=require('node:crypto');
 const {testKeys}=require('./browser_collection_fixture.cjs');
 const python=process.env.PYTHON||'python', base='http://127.0.0.1:5117';
 const directory=fs.mkdtempSync(path.join(os.tmpdir(),'folder-isolation-browser-'));
@@ -66,15 +67,24 @@ app.app.run(host='127.0.0.1',port=5117,use_reloader=False)
   await page.waitForFunction(()=>STAFFING_PLAN.employees.find(e=>e.name==='Shared')?.minHours===9);
   await switchFolder(2);assert.equal(await shared.locator('[data-field="minHours"]').inputValue(),'20');
   await switchFolder(1);assert.equal(await shared.locator('[data-field="minHours"]').inputValue(),'9');
-  await page.locator('#newEmpName').fill('Manual member');await page.locator('#addEmpBtn').click();
-  await page.getByRole('cell',{name:'Manual member',exact:true}).waitFor();
-  await switchFolder(2);assert.doesNotMatch(await page.locator('#employeeTableWrap').innerText(),/Manual member/);
-  await switchFolder(1);await page.locator('#unassignedEmployees summary').click();await page.locator('[data-importemployee]').click();
-  await page.getByRole('cell',{name:'Unassigned legacy',exact:true}).waitFor();
-  await switchFolder(2);assert.doesNotMatch(await page.locator('#employeeTableWrap').innerText(),/Unassigned legacy/);
+  assert.equal(await page.locator('#newEmpName, #addEmpBtn, #unassignedEmployees, [data-importemployee]').count(),0);
+  assert.doesNotMatch(await page.locator('#tab-employees').innerText(),/Import an employee|Unassigned legacy/);
+  const before=(await (await page.request.get(base+'/api/folders/1/employees',{headers})).json());
+  assert.equal((await page.request.post(base+'/api/folders/1/employees',{headers,data:{name:'Manual member'}})).status(),410);
+  assert.equal((await page.request.get(base+'/api/employees/unassigned',{headers})).status(),410);
+  assert.deepEqual(await (await page.request.get(base+'/api/folders/1/employees',{headers})).json(),before);
+  const made=await page.request.post(base+'/api/admin/codes',{headers,data:{folderId:1}});assert.equal(made.status(),201);
+  const unlocked=await page.request.post(base+'/api/collection/unlock',{data:{code:(await made.json()).code}});assert.equal(unlocked.status(),200);
+  const ctx=await unlocked.json();
+  const submitted=await page.request.post(base+'/api/availability',{headers:{'X-Submission-CSRF':ctx.csrf},data:{
+    name:'Submitted member',folderId:1,revision:ctx.revision,requestId:randomUUID(),availability:{Mon_07:1},comment:''}});
+  assert.equal(submitted.status(),200,await submitted.text());
+  await page.evaluate(()=>renderEmployees());
+  await page.getByRole('cell',{name:'Submitted member',exact:true}).waitFor();
+  await switchFolder(2);assert.doesNotMatch(await page.locator('#employeeTableWrap').innerText(),/Submitted member|Unassigned legacy/);
   await switchFolder(1);
   if(process.env.SCOPE_SCREENSHOT)await page.locator('#tab-employees').screenshot({path:process.env.SCOPE_SCREENSHOT});
   assert.deepEqual(errors,[]);
-  console.log('PASS: all seven tabs retain folder scope; settings and shared-employee edits are independent; manual employees and explicit legacy imports stay in their folder.');
+  console.log('PASS: all seven tabs retain folder scope; roster editing stays independent; adding/import controls and APIs are retired; submitted availability adds an employee only to its destination folder.');
  } finally {if(browser)await browser.close();server.kill();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

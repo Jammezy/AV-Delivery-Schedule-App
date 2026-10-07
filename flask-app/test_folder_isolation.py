@@ -44,9 +44,28 @@ class FolderIsolationTests(unittest.TestCase):
         return self.client.put(f'/api/folders/{folder}/{route}', headers=self.headers, json=data)
 
     def add(self, folder, name):
-        result = self.client.post(f'/api/folders/{folder}/employees', headers=self.headers, json={'name':name})
-        self.assertEqual(result.status_code, 201, result.json)
-        return result.json
+        # Seed historical roster states directly; public creation requires a submission.
+        with db.connection_context(), web.write_transaction():
+            base, number = name, 2
+            while Employee.select().where(Employee.name == name).exists():
+                name = f'{base} ({number})'; number += 1
+            employee = Employee.create(name=name)
+            member = enroll_employee(employee, folder)
+            return web.serialize(member)
+
+    def test_manual_creation_and_import_are_retired(self):
+        other = self.add(self.b, 'Other folder')
+        with db.connection_context(): legacy = Employee.create(name='Unassigned legacy')
+        for payload in [{'name':'Manual'}, {'employeeId':legacy.id}, {'employeeId':other['id']}]:
+            result = self.client.post(f'/api/folders/{self.a}/employees', headers=self.headers, json=payload)
+            self.assertEqual(result.status_code, 410, result.json)
+        self.assertEqual(self.client.get('/api/employees/unassigned', headers=self.headers).status_code, 410)
+        self.assertEqual(self.client.put(f'/api/employees/Manual?folderId={self.a}', headers=self.headers,
+                                       json={'minHours':0,'maxHours':40}).status_code, 409)
+        self.assertEqual(self.get(self.a, 'employees').json, [])
+        with db.connection_context():
+            self.assertFalse(FolderEmployee.select().where(FolderEmployee.employee == legacy).exists())
+            self.assertFalse(Employee.select().where(Employee.name == 'Manual').exists())
 
     def availability(self, folder, employee):
         with db.connection_context():
@@ -169,9 +188,8 @@ class FolderIsolationTests(unittest.TestCase):
         with db.connection_context():
             self.assertEqual(FolderEmployee.select().count(),2)
             self.assertEqual(json.loads(SavedSchedule.get().snapshot_json),{'original':True})
-        self.assertEqual(self.client.get('/api/employees/unassigned',headers=self.headers).json,[{'id':unassigned.id,'name':'Unassigned'}])
-        self.assertEqual(self.client.post(f'/api/folders/{self.a}/employees',headers=self.headers,json={'employeeId':unassigned.id}).status_code,201)
-        self.assertEqual(self.get(self.a,'staffing-plan').json['allottedHours'],16)
+        self.assertEqual(self.client.post(f'/api/folders/{self.a}/employees',headers=self.headers,json={'employeeId':unassigned.id}).status_code,410)
+        self.assertEqual(self.get(self.a,'staffing-plan').json['allottedHours'],9)
         self.assertEqual(self.get(self.b,'staffing-plan').json['allottedHours'],9)
         self.put(self.a,'config',{'wFairness':456}); init_db()
         self.assertEqual(self.get(self.a,'config').json['wFairness'],456)
@@ -206,6 +224,9 @@ class FolderIsolationTests(unittest.TestCase):
             'name':'Code person','folderId':self.b,'revision':unlocked['revision'],'requestId':uuid.uuid4().hex,'availability':{'Mon_09':1},'comment':''})
         self.assertEqual(response.status_code,200,response.json)
         self.assertEqual(self.get(self.a,'employees').json,[])
+        self.assertEqual(len(self.get(self.b,'employees').json),1)
+        self.assertEqual(self.get(self.b,'employees').json[0]['name'],'Code person')
+        init_db()
         self.assertEqual(len(self.get(self.b,'employees').json),1)
 
     def test_folder_deletion_removes_only_its_memberships_and_settings(self):

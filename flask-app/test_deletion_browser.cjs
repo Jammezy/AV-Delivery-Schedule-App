@@ -95,7 +95,7 @@ async function check(viewport) {
     assert.equal(await page.evaluate(()=>LAST_RESULT),null);assert.equal(await page.evaluate(()=>LAST_WKND_PREVIEW),null);
     await page.locator('#deleteFolderBtn').click();await page.locator('#deleteFolderConfirmation').fill('Preserved semester');
     await page.locator('#deleteFolderConfirmBtn').click();await page.locator('#overviewArea').getByText(/No folders yet/).waitFor({state:'attached'});
-    assert.equal(await page.locator('#createFolderBtn').isEnabled(),true);assert.equal(await page.locator('#addEmpBtn').isEnabled(),false);
+    assert.equal(await page.locator('#createFolderBtn').isEnabled(),true);assert.equal(await page.locator('#saveAllEmployeesBtn').isEnabled(),false);
     assert.match(await page.locator('#employeeTableWrap').textContent(),/Create or select a folder/);
     await page.screenshot({path:path.join(__dirname,'test-browser-output',`empty-${viewport.width}.png`),fullPage:true});
     console.log(`PASS real browser confirmation/deletion and final-folder flow at ${viewport.width}×${viewport.height}`);

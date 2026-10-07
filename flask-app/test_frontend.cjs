@@ -191,7 +191,6 @@ async function planningAdmin() {
       const allotted = roster.reduce((sum,e)=>sum+e.minHours,0);
       return {ok:true,json:async()=>({employees:structuredClone(roster),requiredHours:required,allottedHours:allotted,remainingHours:required-allotted})};
     }
-    if (url === '/api/employees/unassigned') return {ok:true,json:async()=>[]};
     if (/^\/api\/folders\/1\/employees/.test(url)) {
       if (failSave) return {ok:false,json:async()=>({error:'Save failed'})};
       const data = options.body ? JSON.parse(options.body) : {};
@@ -236,9 +235,9 @@ test('planning totals preview, save, failure, invalid input and tab reload stay 
   edit('0'); await doc.querySelector('[data-action="save"]').onclick();
   assert.match(text(),/50 hours remaining/);
   t.setRequired(60); await run('refreshDiagnostics()'); assert.match(text(),/60 hours remaining/);
-  doc.getElementById('newEmpName').value='Blair'; await doc.getElementById('addEmpBtn').onclick();
-  assert.equal(run('STAFFING_PLAN.employees.length'),2);
-  await doc.querySelector('[data-action="delete"]').onclick();
+  assert.equal(doc.getElementById('newEmpName'),null);
+  assert.equal(doc.getElementById('addEmpBtn'),null);
+  assert.equal(doc.getElementById('unassignedEmployees'),null);
   await doc.querySelector('[data-action="delete"]').onclick();
   assert.equal(run('STAFFING_PLAN.allottedHours'),0); assert.match(text(),/60 hours remaining/);
   dom.window.close();
@@ -520,7 +519,6 @@ async function deletionAdmin({last=false}={}) {
     }
     if(url==='/api/folders')return reply({folders,activeFolderId:active});
     if(url.endsWith('/config'))return reply(config);
-    if(url==='/api/employees/unassigned')return reply([]);
     if(url.endsWith('/staffing-plan'))return reply({employees:overview.employees,requiredHours:30,allottedHours:10,remainingHours:20});
     if(url.startsWith('/api/availability?'))return reply({...overview,availability:{},submissions:[],comments:{}});
     if(url.startsWith('/api/diagnostics?'))return reply({config});
@@ -576,7 +574,7 @@ test('final-folder deletion disables folder-only controls and permits folder cre
   assert.match(doc.getElementById('overviewArea').textContent,/No folders yet/);
   for(const id of ['deleteFolderBtn','generateBtn','wkndGenerateBtn'])assert.equal(doc.getElementById(id).disabled,true);
   assert.equal(doc.getElementById('createFolderBtn').disabled,false);
-  assert.equal(doc.getElementById('addEmpBtn').disabled,true);
+  assert.equal(doc.getElementById('saveAllEmployeesBtn').disabled,true);
   assert.match(doc.getElementById('employeeTableWrap').textContent,/Create or select a folder/);
   assert.equal(doc.getElementById('employeesStaffingPlan').textContent,'');
   assert.ok(!requests.some(r=>/folderId=(null|0)|folders\/(null|0)/.test(r.url)));
@@ -674,7 +672,6 @@ async function scopedAdmin() {
   const writes=[];
   const reply=data=>({ok:true,status:200,json:async()=>structuredClone(data)});
   const fetch=async(url,opts={})=>{
-    if(url==='/api/employees/unassigned')return reply([]);
     const id=Number(url.match(/\/folders\/(\d+)/)?.[1]||url.match(/folderId=(\d+)/)?.[1]);
     if(opts.method==='PUT') {
       writes.push({url,body:JSON.parse(opts.body)});
@@ -804,7 +801,7 @@ test('settings save targets its captured folder and failed loading keeps editing
   dom.window.fetch=async()=>{throw Error('offline')};
   doc.getElementById('folderSelect').value='1';await run('changeFolder()');
   assert.equal(doc.getElementById('saveSettingsBtn').disabled,true);
-  assert.equal(doc.getElementById('addEmpBtn').disabled,true);
+  assert.equal(doc.getElementById('saveAllEmployeesBtn').disabled,true);
   assert.equal(doc.getElementById('settingsForm').textContent,'');
   dom.window.close();
 });

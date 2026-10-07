@@ -19,7 +19,7 @@ from models import (
     normalize_level, Folder, SubmissionState, FolderAvailability,
     SavedSchedule, SavedWeekendSchedule, AdminSession, write_transaction,
     IntakeSubmission, CollectionCode, CollectionSettings, EditGrant, FolderEmployee, FolderConfig,
-    folder_members, enroll_employee,
+    folder_members,
 )
 import solver as solver_module
 import weekend_generator
@@ -372,37 +372,14 @@ def employee_values(data):
 @app.get('/api/employees/unassigned')
 @require_admin
 def unassigned_employees():
-    ids = FolderEmployee.select(FolderEmployee.employee)
-    return jsonify([dict(id=e.id, name=e.name) for e in Employee.select().where(
-        Employee.id.not_in(ids)).order_by(Employee.name)])
+    abort(410, 'Employee imports are no longer available. Employees join a folder by submitting availability.')
 
 
 @app.post('/api/folders/<int:folder_id>/employees')
 @require_admin
 def add_folder_employee(folder_id):
-    folder = requested_folder(folder_id)
-    data = body()
-    with write_transaction():
-        if 'employeeId' in data:
-            eid = data['employeeId']
-            if type(eid) is not int:
-                abort(400, 'Choose an unassigned employee.')
-            employee = Employee.get_or_none(Employee.id == eid)
-            if not employee or FolderEmployee.select().where(FolderEmployee.employee == eid).exists():
-                abort(409, 'This employee is already assigned. Refresh the unassigned list.')
-        else:
-            name = data.get('name')
-            if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
-                abort(400, 'Enter a name of 1–100 characters.')
-            base = re.sub(r'\s+', ' ', name).strip()
-            name, number = base, 2
-            # Shared names do not establish identity or enroll another folder's employee.
-            existing = {e.name.casefold() for e in Employee.select(Employee.name)}
-            while name.casefold() in existing:
-                name = f'{base} ({number})'; number += 1
-            employee = Employee.create(name=name)
-        member = enroll_employee(employee, folder.id)
-    return jsonify(serialize(member)), 201
+    requested_folder(folder_id)
+    abort(410, 'Adding employees manually is no longer available. Employees join this folder by submitting availability.')
 
 
 @app.put('/api/folders/<int:folder_id>/employees')
@@ -466,12 +443,7 @@ def upsert_employee(name):
     employee_values(body())
     member = folder_members(folder.id).where(Employee.name == name).first()
     if member is None:
-        with write_transaction():
-            employee = Employee.get_or_none(Employee.name == name)
-            if employee and FolderEmployee.select().where(FolderEmployee.employee == employee).exists():
-                abort(409, 'Use the folder employee ID; this name belongs to another folder.')
-            employee = employee or Employee.create(name=name)
-            member = enroll_employee(employee, folder.id)
+        abort(409, 'Employees join this folder by submitting availability. Only existing roster entries can be updated.')
     return update_folder_employee.__wrapped__(folder.id, member.employee_id)
 
 
