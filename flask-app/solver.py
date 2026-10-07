@@ -797,10 +797,17 @@ def generate_schedule(employees, availability, cfg, seed=None, incumbent=None, p
         proven = status == cp_model.OPTIMAL
         stages.append(dict(name=name, score=score, optimal=proven))
         candidate = pack(incumbent, stages)
-        if best is None or quality(candidate) >= quality(best):
+        if best is None or quality(candidate) > quality(best):
             best = candidate
             if progress:
                 progress(candidate)
+        elif quality(candidate) == quality(best):
+            # Keep the incumbent assignments on ties; newly established proofs
+            # also apply to its equal objective vector.
+            best.update(status=candidate['status'], fairnessOptimal=candidate['fairnessOptimal'],
+                        optimizationStages=candidate['optimizationStages'])
+            if progress:
+                progress(best)
         model.Add(expression <= score if minimize else expression >= score)
         if not proven:
             break

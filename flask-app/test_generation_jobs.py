@@ -75,15 +75,40 @@ class GenerationJobTests(unittest.TestCase):
 
     def test_cancel_and_scope_and_health_without_database(self):
         job_id = self.post().json['jobId']
+        claimed = jobs.claim()
         self.assertEqual(self.client.get(f'/api/folders/{self.folder}/generation-jobs/{job_id}').status_code, 401)
         with db.connection_context():
             other = Folder.create(name='Other').id
         self.assertEqual(self.status(job_id, other).status_code, 404)
         cancel = self.client.post(f'/api/folders/{self.folder}/generation-jobs/{job_id}/cancel', headers=self.headers)
         self.assertEqual(cancel.json['status'], 'cancelled')
+        jobs.run_job(claimed[0], claimed[1])
         self.assertIsNone(jobs.claim())
         with patch.object(db, 'connect', side_effect=AssertionError('Health must not access database')):
             self.assertEqual(self.client.get('/healthz').status_code, 200)
+
+    def test_queue_bound_and_one_owner_even_with_multiple_folders(self):
+        self.post()
+        with db.connection_context():
+            extra = []
+            for i in range(3):
+                folder = Folder.create(name=f'Queue {i}')
+                FolderAvailability.create(folder=folder,employee=self.employee,data_json=self.row.data_json)
+                extra.append(folder.id)
+        for index, folder in enumerate(extra):
+            response = self.client.post('/api/generate',headers=self.headers,
+                json={'folderId':folder,'employeeIds':[self.employee.id]})
+            self.assertEqual(response.status_code,202 if index<2 else 429)
+        self.assertIsNotNone(jobs.claim())
+        self.assertIsNone(jobs.claim())
+
+    def test_time_budget_bounds_and_conflicting_inflight_inputs(self):
+        route=f'/api/folders/{self.folder}/config'
+        self.assertEqual(self.client.put(route,headers=self.headers,json={'solverTimeLimit':1801}).status_code,400)
+        self.assertEqual(self.client.put(route,headers=self.headers,json={'solverTimeLimit':1800}).status_code,200)
+        self.post()
+        self.client.put(route,headers=self.headers,json={'solverTimeLimit':120})
+        self.assertEqual(self.post().status_code,409)
 
     def test_expired_lease_recovers_and_fences_old_worker(self):
         self.post()
@@ -122,6 +147,7 @@ class GenerationJobTests(unittest.TestCase):
         self.finish()
         result = self.status(second).json['result']
         self.assertEqual(result['qualityChange'], 'unchanged')
+        self.assertEqual(result['work'], original['work'])
         self.assertEqual(result['fairnessFloor'], original['fairnessFloor'])
         self.assertLess(result['solveSeconds'], 5)
         self.assertEqual(result['solverWorkersUsed'], 1)

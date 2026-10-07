@@ -158,9 +158,7 @@ def run_job(job_id, owner):
             last_checkpoint = time.monotonic()
 
         with web.app.app_context():
-            kwargs = dict(seed=payload.get('seed'))
-            # Preserve simple fixture solvers' existing signature when no baseline.
-            kwargs.update(incumbent=baseline, progress=progress)
+            kwargs = dict(seed=payload.get('seed'), incumbent=baseline, progress=progress)
             result = web.solver_module.generate_schedule(payload['employees'], payload['availability'], cfg, **kwargs)
             with db.connection_context(), write_transaction():
                 if not owned(job_id, owner):
@@ -170,6 +168,7 @@ def run_job(job_id, owner):
                     web.abort(409, 'The original folder was deleted. Generate again in the current folder.')
                 web.recheck_generation_inputs(folder, payload['inputVersion'], payload['employeeIds'])
                 if result['status'] in ('OPTIMAL', 'FEASIBLE'):
+                    result.pop('savedScheduleId', None)
                     result.update(employees=payload['employees'], config=payload['config'], solverWorkersUsed=cfg['solverWorkers'])
                     snapshot = dict(result=result, submissions=payload['submissions'], employeeIds=payload['employeeIds'],
                                     folder=payload['folder'], generationFingerprint=job.fingerprint)
