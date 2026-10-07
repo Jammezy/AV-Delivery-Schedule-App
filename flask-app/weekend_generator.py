@@ -61,33 +61,42 @@ def generate_weekend_schedule(config, availability_dict, roster):
                 avail.add(k)
         parsed_avail[name] = avail
 
-    # 2. Construct dated shifts in chronological order, excluding holidays
+    # 2. Keep excluded shifts for voluntary signups, outside the assignment solver.
     dated_shifts = []
+    signup_shifts = []
+    excluded_labels = {excl['date']: excl.get('label', '')
+                       for excl in config.get('excluded_dates', []) if isinstance(excl, dict)}
     current = start_date
     while current <= end_date:
         if current.weekday() == 4: # Friday
             friday = current
             for s in SHIFTS:
                 s_date = friday + datetime.timedelta(days=s["day_offset"])
-                if start_date <= s_date <= end_date and s_date not in holidays:
-                    dated_shifts.append({
+                if start_date <= s_date <= end_date:
+                    target = signup_shifts if s_date in holidays else dated_shifts
+                    target.append({
                         "friday": friday.isoformat(),
                         "date": s_date.isoformat(),
                         "shift": s,
                         "origin": None,
                         "assigned": None,
+                        **({"origin": "signup", "label": excluded_labels.get(s_date.isoformat(), '')}
+                           if s_date in holidays else {}),
                     })
         elif current == start_date and current.weekday() in [5, 6]: # partial first weekend
             friday = current - datetime.timedelta(days=(current.weekday() - 4))
             for s in SHIFTS:
                 s_date = friday + datetime.timedelta(days=s["day_offset"])
-                if start_date <= s_date <= end_date and s_date not in holidays:
-                    dated_shifts.append({
+                if start_date <= s_date <= end_date:
+                    target = signup_shifts if s_date in holidays else dated_shifts
+                    target.append({
                         "friday": friday.isoformat(),
                         "date": s_date.isoformat(),
                         "shift": s,
                         "origin": None,
                         "assigned": None,
+                        **({"origin": "signup", "label": excluded_labels.get(s_date.isoformat(), '')}
+                           if s_date in holidays else {}),
                     })
         current += datetime.timedelta(days=1)
 
@@ -211,6 +220,7 @@ def generate_weekend_schedule(config, availability_dict, roster):
 
     return {
         "assignments": dated_shifts,
+        "signup_shifts": signup_shifts,
         "effective_pool": effective_pool,
         "rotating_counts": dict(actual_rotating)
     }

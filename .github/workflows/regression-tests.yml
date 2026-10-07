@@ -36,9 +36,11 @@ jobs:
       - run: pip install -r requirements.txt
       - run: npm install --no-save jsdom@30.1.0 exceljs@4.4.0 playwright@1.58.2
       - run: npx playwright install --with-deps chromium
-      - run: python -m unittest -v test_app test_boundary test_collection_codes test_folder_isolation 2>&1 | tee test-backend.log
+      - run: python -m unittest -v test_app test_boundary test_collection_codes test_folder_isolation test_weekend_generator 2>&1 | tee test-backend.log
         if: ${{ !cancelled() }}
       - run: node test_frontend.cjs 2>&1 | tee test-frontend.log
+        if: ${{ !cancelled() }}
+      - run: node test_weekend_browser.cjs 2>&1 | tee test-weekend-browser.log
         if: ${{ !cancelled() }}
       - run: node test_folder_isolation_browser.cjs 2>&1 | tee test-scope-browser.log
         if: ${{ !cancelled() }}
@@ -74,7 +76,7 @@ jobs:
           script: |
             const fs = require('fs');
             let summary = '';
-            for (const kind of ['backend','frontend','scope-browser','postgres','code-postgres','code-browser','history-browser','browser','retention-browser','request-retention-browser','boundary-browser','supervisor-browser','permissions-browser','solver']) {
+            for (const kind of ['backend','frontend','weekend-browser','scope-browser','postgres','code-postgres','code-browser','history-browser','browser','retention-browser','request-retention-browser','boundary-browser','supervisor-browser','permissions-browser','solver']) {
               const path = `flask-app/test-${kind}.log`;
               if (fs.existsSync(path)) summary += `### ${kind}\n\n\`\`\`text\n${fs.readFileSync(path,'utf8').slice(-13000)}\n\`\`\`\n\n`;
             }

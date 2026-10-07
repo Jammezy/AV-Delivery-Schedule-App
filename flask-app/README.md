@@ -442,8 +442,17 @@ objectives, lead-coverage switches, or weekly hour limits, and does not jointly
 optimize weekday plus weekend workloads.
 
 Weekend generation creates a preview. Its **Save schedule** button explicitly stores
-it; saved weekends can be reopened and deleted. Excel export currently covers
-weekday schedules. The preview
+it; saved weekends can be reopened and deleted. Both new and reopened previews
+show a formatted, color-coded handout with dated assignments and shifts grouped
+by employee. **Download .xlsx** exports the same layout on a **Weekend Shifts**
+sheet, plus a **Signup Shifts** sheet with blank employee signup cells.
+
+Excluded dates skip fixed assignments and rotation, but their recurring weekend
+shifts within the selected date range remain visible as voluntary signups for
+additional hours, including optional occasion labels. Supervisors can collect
+volunteers separately; signup shifts do not change rotation counts or assigned
+totals. Unfilled regular shifts are marked separately. Older saved previews use
+their saved exclusions to recover the signup section. The preview
 must still match its folder and source availability when saved, otherwise
 generate a fresh one. The folder's assignment controls reload when switching
 folders.
@@ -606,7 +615,7 @@ The PostgreSQL harness creates/drops uniquely named databases on a dedicated
 Backend and solver checks:
 
 ```sh
-python -m unittest -v test_app test_boundary test_collection_codes test_folder_isolation
+python -m unittest -v test_app test_boundary test_collection_codes test_folder_isolation test_weekend_generator
 python verify.py
 ```
 
@@ -638,6 +647,7 @@ node test_request_retention_browser.cjs
 node test_boundary_browser.cjs
 node test_supervisor_availability_browser.cjs
 node test_boundary_permissions_browser.cjs
+node test_weekend_browser.cjs
 ```
 
 These cover collection/corrections, folder changes, dialogs, save conflicts,

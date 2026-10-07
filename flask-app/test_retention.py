@@ -257,7 +257,7 @@ class RetentionTests:
         self.assertEqual(response.status_code, 409)
         self.submit('Old')
         config = dict(start_date='2026-10-02', end_date='2026-10-04')
-        fake = dict(assignments=[], effective_pool=[], rotating_counts={})
+        fake = dict(assignments=[], signup_shifts=[], effective_pool=[], rotating_counts={})
         with patch.object(web.weekend_generator, 'generate_weekend_schedule', return_value=fake):
             response = self.client.post('/api/generate_weekend', headers=self.headers, json=dict(folderId=folder_id, config=config))
         self.assertEqual(response.status_code, 200)
