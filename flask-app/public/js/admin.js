@@ -622,6 +622,9 @@ async function generateSchedule() {
 
   if (revision !== VIEW_REVISION) return;
   const requestId = crypto.randomUUID().replaceAll('-', '');
+  // A lost POST response may still mean a completed job. Persist its key before
+  // sending so a reload can retrieve that exact result without resubmitting.
+  sessionStorage.setItem(`generationJob:${folderId}`, requestId);
   const r = await apiSend("/api/generate", "POST", { seed: Math.floor(Math.random() * 1e9), folderId, employeeIds, requestId });
   if (revision !== VIEW_REVISION) return;
   GENERATION_JOB = null;
@@ -641,9 +644,10 @@ async function resumeGeneration() {
   if (!FOLDER_ID || GENERATION_JOB) return;
   const revision = VIEW_REVISION, folderId = FOLDER_ID;
   const id = sessionStorage.getItem(`generationJob:${folderId}`);
-  const job = await apiGet(`/api/folders/${folderId}/generation-jobs/${id || 'latest'}`);
+  let job = await apiGet(`/api/folders/${folderId}/generation-jobs/${id || 'latest'}`);
   if (!job || revision !== VIEW_REVISION) return;
-  if (job.missing) return;
+  if (job.missing && id) job = await apiGet(`/api/folders/${folderId}/generation-jobs/latest`);
+  if (!job || job.missing || revision !== VIEW_REVISION) return;
   if (['queued','running'].includes(job.status) || id) await watchGeneration(job, revision);
 }
 

@@ -326,6 +326,27 @@ test('weekday completion distinguishes fairness gains and no improvement',async(
   assert.match(doc.getElementById('generateMsg').textContent,/best previous schedule was kept/);
   dom.window.close();
 });
+
+test('a lost generation response recovers its completed result without another submission',async()=>{
+  const {dom,run}=await admin();
+  let requestId, posts=0;
+  run('STAFFING_PLAN={}; FOLDERS=[{id:1,name:"Test"}]; showGenerationResult=async r=>window.shown=r.data;');
+  dom.window.fetch=async(url,options={})=>{
+    if(url==='/api/generate') {
+      posts++;
+      requestId=JSON.parse(options.body).requestId;
+      assert.equal(dom.window.sessionStorage.getItem('generationJob:1'),requestId);
+      throw Error('Response disconnected');
+    }
+    assert.equal(url,`/api/folders/1/generation-jobs/${requestId}`);
+    return {ok:true,status:200,json:async()=>({jobId:requestId,folderId:1,status:'completed',result:{fairnessFloor:500}})};
+  };
+  await run('generateSchedule()');
+  assert.equal(posts,1);
+  assert.equal(dom.window.shown.fairnessFloor,500);
+  assert.equal(dom.window.sessionStorage.getItem('generationJob:1'),null);
+  dom.window.close();
+});
 test('supervisor permission drafts survive failures and selection changes; explicit saves carry versions',async()=>{
   const {dom,run,doc}=await admin(), el=id=>doc.getElementById(id);
   const consent={allowExtraOpenings:true,allowExtraClosings:false,enabled:false,reconfirmationNeeded:true,
