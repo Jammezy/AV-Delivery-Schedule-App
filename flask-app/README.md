@@ -243,8 +243,10 @@ A new folder starts with default scheduling settings and an empty roster.
 Changing its settings, lead status, or employee hour limits does not edit another
 folder. Matching names do not automatically link people across folders.
 
-Supervisors can add employees before they submit, or explicitly import unassigned
-legacy identities from Employees. Removing a membership excludes that employee
+Employees join a folder's roster when they submit availability through a code
+for that folder. The Employees tab has no manual add-by-name or import controls;
+the former creation/import APIs are retired, and legacy update-by-name requests
+only edit existing members. Removing a membership excludes that employee
 from current scheduling and revokes their edit grants in that folder while
 preserving response history, saved schedules, the employee identity, and other
 memberships.

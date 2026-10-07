@@ -117,6 +117,7 @@ class AppTests(RetentionTests, FolderDeletionTests, unittest.TestCase):
         empty = plan()
         # Defaults: Mon–Thu 12*4 + 3*2; Fri 12*4 = 264 staff-hours.
         self.assertEqual((empty['requiredHours'], empty['allottedHours'], empty['remainingHours']), (264, 0, 264))
+        self.submit('Alex', {'Mon_07':1})
         for minimum, remaining in [(150, 114), (264, 0), (279, -15), (0, 264)]:
             response = self.client.put('/api/employees/Alex', headers=self.headers,
                 json={'minHours': minimum, 'maxHours': 300})
@@ -142,6 +143,7 @@ class AppTests(RetentionTests, FolderDeletionTests, unittest.TestCase):
                 json={'minHours': value, 'maxHours': 40})
             self.assertEqual(response.status_code, 400)
         self.assertEqual(self.client.get('/api/employees', headers=self.headers).json, [])
+        self.submit('Zero', {'Mon_07':1})
         response = self.client.put('/api/employees/Zero', headers=self.headers,
             json={'minHours': '0', 'maxHours': '0'})
         self.assertEqual(response.json['maxHours'], 0)

@@ -216,14 +216,17 @@ $("saveAllEmployeesBtn").onclick = async () => {
 
 async function renderEmployees() {
   const folderId = FOLDER_ID, revision = VIEW_REVISION;
+  // A tab refresh replaces the rows; don't accept edits against the old rows.
+  document.querySelectorAll('#employeeTableWrap input, #employeeTableWrap button').forEach(el => el.disabled = true);
+  $('saveAllEmployeesBtn').disabled = true;
   const plan = await refreshStaffingPlan();
-  if (!plan || revision !== VIEW_REVISION || folderId !== FOLDER_ID) return;
+  if (revision !== VIEW_REVISION || folderId !== FOLDER_ID) return;
+  if (!plan) { renderFolderControls(); return; }
   EMPLOYEES = plan.employees;
-  await renderUnassignedEmployees();
-  if (revision !== VIEW_REVISION) return;
   const wrap = $("employeeTableWrap");
   if (!EMPLOYEES.length) {
-    wrap.innerHTML = `<p class="hint">Nobody yet. Add someone above, or wait for the first submission.</p>`;
+    wrap.innerHTML = `<p class="hint">No employees yet. Employees appear here when they submit availability for this folder.</p>`;
+    renderFolderControls();
     return;
   }
   wrap.innerHTML = `
@@ -290,21 +293,7 @@ async function renderEmployees() {
       await renderOverview(); await refreshDiagnostics(); await renderWeekendUI();
     };
   });
-}
-
-async function renderUnassignedEmployees() {
-  const folderId = FOLDER_ID, revision = VIEW_REVISION;
-  if (!folderId) return;
-  const employees = await apiGet('/api/employees/unassigned');
-  if (!Array.isArray(employees) || revision !== VIEW_REVISION) return;
-  $('unassignedEmployees').innerHTML = employees.length ? `<details><summary>Import an employee without a folder</summary><p>These older employee records are not assigned to any folder.</p>${employees.map(e => `<p>${escapeHtml(e.name)} <button class="secondary" data-importemployee="${e.id}">Add to this folder</button></p>`).join('')}</details>` : '';
-  $('unassignedEmployees').querySelectorAll('[data-importemployee]').forEach(button => button.onclick = async () => {
-    if (revision !== VIEW_REVISION || FOLDER_LOADING) return;
-    const response = await apiSend(`/api/folders/${folderId}/employees`, 'POST', {employeeId:Number(button.dataset.importemployee)});
-    if (!response || revision !== VIEW_REVISION) return;
-    if (!response.ok) { alert(response.data.error || 'Could not import employee.'); return; }
-    await renderEmployees(); await refreshDiagnostics(); await renderWeekendUI();
-  });
+  renderFolderControls();
 }
 
 // ---------------- settings ----------------
@@ -815,18 +804,6 @@ $("generateBtn").onclick = generateSchedule;
 $("regenerateBtn").onclick = generateSchedule;
 $("downloadBtn").onclick = downloadExcel;
 $("refreshDiagBtn").onclick = refreshDiagnostics;
-$("addEmpBtn").onclick = async () => {
-  const name = $("newEmpName").value.trim();
-  if (!name) return;
-  if (!FOLDER_ID || FOLDER_LOADING) return;
-  const revision = VIEW_REVISION;
-  const result = await apiSend(`/api/folders/${FOLDER_ID}/employees`, "POST", {name});
-  if (revision !== VIEW_REVISION) return;
-  if (!result?.ok) { if (result) alert(result.data.error || "Couldn't add employee."); return; }
-  $("newEmpName").value = "";
-  await renderEmployees(); await renderOverview(); await renderWeekendUI();
-  await refreshDiagnostics();
-};
 
 if (TOKEN) {
   $("loginCard").style.display = "none";

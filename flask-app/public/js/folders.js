@@ -39,10 +39,10 @@ function renderFolderControls() {
     $(id).disabled = !FOLDER_ID || DELETION_BUSY;
   }
   const unavailable = !FOLDER_ID || FOLDER_LOADING || DELETION_BUSY || !CONFIG || !STAFFING_PLAN;
-  for (const id of ['addEmpBtn','newEmpName','saveSettingsBtn','generateBtn','regenerateBtn','wkndGenerateBtn']) $(id).disabled = unavailable;
+  for (const id of ['saveSettingsBtn','generateBtn','regenerateBtn','wkndGenerateBtn']) $(id).disabled = unavailable;
   document.querySelectorAll('#employeeTableWrap input, #employeeTableWrap button, #settingsForm input, #settingsForm select').forEach(el => el.disabled = unavailable);
-  document.querySelectorAll('#employeeTableWrap input, #employeeTableWrap button, #unassignedEmployees button').forEach(el => el.disabled = unavailable || EMPLOYEES_SAVING);
-  for (const id of ['saveAllEmployeesBtn','addEmpBtn','newEmpName']) $(id).disabled = unavailable || EMPLOYEES_SAVING || (id === 'saveAllEmployeesBtn' && !EMPLOYEES.length);
+  document.querySelectorAll('#employeeTableWrap input, #employeeTableWrap button').forEach(el => el.disabled = unavailable || EMPLOYEES_SAVING);
+  $('saveAllEmployeesBtn').disabled = unavailable || EMPLOYEES_SAVING || !EMPLOYEES.length;
   $('wkndSaveChoicesBtn').disabled = unavailable || WEEKEND_CHOICES_SAVING;
   document.querySelectorAll('#tab-weekend input, #tab-weekend select, #addExclBtn, #wkndExcludedList button, #wkndRotatingTable button').forEach(el => el.disabled = unavailable || WEEKEND_CHOICES_SAVING);
   // Preserve the first/last rotation boundaries when enabling controls again.
@@ -62,8 +62,7 @@ function clearFolderView() {
   EMPLOYEE_DRAFTS.clear();
   EMPLOYEES_SAVING = false;
   $('employeesSaveMsg').textContent = '';
-  for (const id of ['employeeTableWrap','settingsForm','settingsMsg','diagnosticsStaffingPlan','employeesStaffingPlan','unassignedEmployees']) $(id).innerHTML = '';
-  $('newEmpName').value = '';
+  for (const id of ['employeeTableWrap','settingsForm','settingsMsg','diagnosticsStaffingPlan','employeesStaffingPlan']) $(id).innerHTML = '';
   VIEW_REVISION++;
   PINNED = PREVIEWED = null;
   SELECTED = new Set(); OVERVIEW = null; LAST_DIAG = null;
