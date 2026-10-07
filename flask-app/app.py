@@ -821,6 +821,9 @@ def saved_weekend_schedule(folder_id, schedule_id):
 @require_admin
 def generate():
     data = body()
+    mode = data.get('mode', 'optimize')
+    if mode not in ('optimize', 'alternative'):
+        abort(400, 'Choose optimization or alternative generation.')
     ids = data.get("employeeIds")
     if not isinstance(ids, list) or not ids or any(type(i) is not int for i in ids) or len(ids) != len(set(ids)):
         abort(400, "Select at least one employee with submitted availability.")
@@ -845,7 +848,13 @@ def generate():
         payload = dict(employees=roster, availability=availability, config=cfg, seed=seed,
                        submissions=submissions, employeeIds=ids, folder=folder_json(folder),
                        folderVersion=folder.created_at.isoformat() + 'Z',
-                       inputVersion=input_version, requestId=data.get('requestId'))
+                       inputVersion=input_version, requestId=data.get('requestId'), mode=mode)
+        if mode == 'alternative':
+            saved = list(SavedSchedule.select().where(SavedSchedule.folder == folder))
+            if not saved:
+                abort(409, 'Create a first schedule in this folder before generating alternatives.')
+            payload['excludedWork'] = [snapshot['result']['work'] for s in saved
+                if isinstance((snapshot := json.loads(s.snapshot_json)).get('result', {}).get('work'), dict)]
         job = generation_jobs.enqueue(payload)
         response = generation_jobs.describe(job)
     if app.config['GENERATION_RUNNER_ENABLED']:
@@ -889,8 +898,12 @@ def cancel_generation(folder_id, job_id):
 @require_admin
 def schedules(folder_id):
     folder_or_404(folder_id)
-    return jsonify([{"id": s.id, "createdAt": s.created_at.isoformat() + "Z"} for s in
-                    SavedSchedule.select().where(SavedSchedule.folder == folder_id).order_by(SavedSchedule.id.desc())])
+    rows = []
+    for saved in SavedSchedule.select().where(SavedSchedule.folder == folder_id).order_by(SavedSchedule.id.desc()):
+        result = json.loads(saved.snapshot_json).get('result', {})
+        rows.append(dict(id=saved.id, createdAt=saved.created_at.isoformat() + 'Z',
+                         fairnessFloor=result.get('fairnessFloor'), generationMode=result.get('generationMode', 'optimize')))
+    return jsonify(rows)
 
 
 @app.route("/api/folders/<int:folder_id>/schedules/<int:schedule_id>", methods=["GET", "DELETE"])

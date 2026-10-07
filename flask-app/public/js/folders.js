@@ -1,6 +1,7 @@
 let FOLDERS = [], FOLDER_ID = null, ACTIVE_FOLDER = null;
 let SELECTED = new Set(), OVERVIEW = null, PINNED = null, PREVIEWED = null;
 let VIEW_REVISION = 0;
+let HAS_SAVED_SCHEDULES = false;
 let FOLDER_LOADING = false;
 let OVERVIEW_REQUEST = 0;
 const PERMISSION_DRAFTS = new Map();
@@ -35,12 +36,13 @@ function renderFolderControls() {
     const archived = FOLDERS.find(f => f.id === FOLDER_ID)?.archived;
     $("createCodeBtn").disabled = !FOLDER_ID || archived || DELETION_BUSY;
   }
-  for (const id of ["renameFolderBtn", "archiveFolderBtn", "deleteFolderBtn", "generateBtn", "regenerateBtn", "wkndGenerateBtn"]) {
+  for (const id of ["renameFolderBtn", "archiveFolderBtn", "deleteFolderBtn", "generateBtn", "regenerateBtn", "alternativesBtn", "wkndGenerateBtn"]) {
     $(id).disabled = !FOLDER_ID || DELETION_BUSY;
   }
   const unavailable = !FOLDER_ID || FOLDER_LOADING || DELETION_BUSY || !CONFIG || !STAFFING_PLAN;
   for (const id of ['saveSettingsBtn','generateBtn','regenerateBtn','wkndGenerateBtn']) $(id).disabled = unavailable;
-  for (const id of ['generateBtn','regenerateBtn']) $(id).disabled = unavailable || Boolean(GENERATION_JOB);
+  for (const id of ['generateBtn','regenerateBtn','alternativesBtn']) $(id).disabled = unavailable || Boolean(GENERATION_JOB);
+  $('alternativesBtn').style.display = HAS_SAVED_SCHEDULES ? 'inline-block' : 'none';
   document.querySelectorAll('#employeeTableWrap input, #employeeTableWrap button, #settingsForm input, #settingsForm select').forEach(el => el.disabled = unavailable);
   document.querySelectorAll('#employeeTableWrap input, #employeeTableWrap button').forEach(el => el.disabled = unavailable || EMPLOYEES_SAVING);
   $('saveAllEmployeesBtn').disabled = unavailable || EMPLOYEES_SAVING || !EMPLOYEES.length;
@@ -66,6 +68,8 @@ function clearFolderView() {
   for (const id of ['employeeTableWrap','settingsForm','settingsMsg','diagnosticsStaffingPlan','employeesStaffingPlan']) $(id).innerHTML = '';
   VIEW_REVISION++;
   GENERATION_JOB = null;
+  HAS_SAVED_SCHEDULES = false;
+  $('alternativesBtn').style.display = 'none';
   PINNED = PREVIEWED = null;
   SELECTED = new Set(); OVERVIEW = null; LAST_DIAG = null;
   clearResult(); clearWeekendView(); closeEditAvailabilityModal();
@@ -446,7 +450,9 @@ async function loadSavedSchedules() {
   const revision = VIEW_REVISION, folderId = FOLDER_ID;
   const rows = await apiGet(`/api/folders/${folderId}/schedules`);
   if (!rows || revision !== VIEW_REVISION) return;
-  $("savedSchedules").innerHTML = rows.length ? rows.map(s => `<div class="row"><span>${escapeHtml(new Date(s.createdAt).toLocaleString())}</span><button data-open="${s.id}" class="secondary">Open</button><button data-delete="${s.id}" class="danger">Delete</button></div>`).join("") : "No saved schedules yet.";
+  HAS_SAVED_SCHEDULES = rows.length > 0;
+  renderFolderControls();
+  $("savedSchedules").innerHTML = rows.length ? rows.map(s => `<div class="row"><span>Schedule ${s.id} · ${escapeHtml(new Date(s.createdAt).toLocaleString())}${s.fairnessFloor == null ? '' : ` · Fairness: ${escapeHtml(s.fairnessFloor)}`}${s.generationMode === 'alternative' ? ' · Alternative' : ''}</span><button data-open="${s.id}" class="secondary">Open</button><button data-delete="${s.id}" class="danger">Delete</button></div>`).join("") : "No saved schedules yet.";
   $("savedSchedules").querySelectorAll("[data-open]").forEach(btn => btn.onclick = async () => {
     if (revision !== VIEW_REVISION || folderId !== FOLDER_ID) return;
     const saved = await apiGet(`/api/folders/${folderId}/schedules/${btn.dataset.open}`);
@@ -456,6 +462,7 @@ async function loadSavedSchedules() {
     $("fairnessOutput").innerHTML = fairnessTable(LAST_RESULT.fairness || []) + boundarySummary(LAST_RESULT);
     $("generateMsg").textContent = "Showing a saved schedule with its original settings and availability.";
     $("downloadBtn").style.display = "inline-block";
+    $("regenerateBtn").style.display = "inline-block";
   });
   $("savedSchedules").querySelectorAll("[data-delete]").forEach(btn => btn.onclick = async () => {
     if (revision !== VIEW_REVISION || folderId !== FOLDER_ID) return;
