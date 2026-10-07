@@ -678,6 +678,8 @@ async function scopedAdmin() {
     const id=Number(url.match(/\/folders\/(\d+)/)?.[1]||url.match(/folderId=(\d+)/)?.[1]);
     if(opts.method==='PUT') {
       writes.push({url,body:JSON.parse(opts.body)});
+      if(url.endsWith('/weekend-choices')) {configs[id].weekendChoices=JSON.parse(opts.body);return reply(configs[id].weekendChoices);}
+      if(url.endsWith('/employees')) {rosters[id]=JSON.parse(opts.body).employees.map(e=>({...rosters[id].find(old=>old.id===e.id),...e}));return reply(rosters[id]);}
       if(url.endsWith('/config')) {configs[id]=JSON.parse(opts.body);return reply(configs[id]);}
       const employee=rosters[id].find(e=>e.id===Number(url.split('/').pop()));
       Object.assign(employee,JSON.parse(opts.body));return reply(employee);
@@ -697,6 +699,55 @@ async function scopedAdmin() {
   await run('changeFolder()');
   return {...t,fetch,writes,configs,rosters,reply};
 }
+
+test('bulk employee save validates all rows, keeps failed drafts, prevents duplicate sends and scopes pending saves',async()=>{
+  const t=await scopedAdmin(),{doc,run,dom}=t, el=id=>doc.getElementById(id);
+  t.rosters[1].push({id:3,name:'Casey',minHours:9,maxHours:15,isLead:false});
+  await run('renderEmployees()');
+  const rows=[...doc.querySelectorAll('#employeeTableWrap tbody tr')];
+  const edit=(row,field,value)=>{const input=row.querySelector(`[data-field="${field}"]`);if(input.type==='checkbox')input.checked=value;else input.value=value;input.dispatchEvent(new dom.window.Event('input'));};
+  edit(rows[0],'isLead',true);edit(rows[0],'minHours','12');edit(rows[1],'minHours','16');
+  await el('saveAllEmployeesBtn').onclick();assert.equal(t.writes.length,0);assert.match(el('employeesSaveMsg').textContent,/Casey/);
+  edit(rows[1],'minHours','11');
+  dom.window.fetch=async(url,opts)=>opts?.method==='PUT'?{ok:false,status:500,json:async()=>({error:'Try again'})}:t.fetch(url,opts);
+  await el('saveAllEmployeesBtn').onclick();assert.equal(run('EMPLOYEE_DRAFTS.size'),2);
+  assert.match(el('employeesSaveMsg').textContent,/Try again/);assert.equal(rows[0].querySelector('input').checked,true);
+  let release;
+  dom.window.fetch=(url,opts)=>opts?.method==='PUT'?new Promise(resolve=>release=()=>t.fetch(url,opts).then(resolve)):t.fetch(url,opts);
+  const pending=el('saveAllEmployeesBtn').onclick();await el('saveAllEmployeesBtn').onclick();
+  assert.equal(el('saveAllEmployeesBtn').disabled,true);assert.equal(rows[0].querySelector('[data-action="delete"]').disabled,true);
+  release();await pending;assert.equal(t.writes.length,1);
+  assert.deepEqual(t.writes[0].body.employees.map(e=>e.minHours),[12,11]);assert.equal(t.rosters[1][0].isLead,true);
+  assert.equal(run('EMPLOYEE_DRAFTS.size'),0);assert.match(el('employeesStaffingPlan').textContent,/23Total minimum hours allotted/);
+  const oldSave=el('saveAllEmployeesBtn').onclick();
+  el('folderSelect').value='2';await run('changeFolder()');release();await oldSave;
+  assert.equal(t.writes[1].url,'/api/folders/1/employees');assert.equal(t.rosters[2][0].minHours,20);
+  assert.equal(el('employeesSaveMsg').textContent,'');assert.match(el('employeeTableWrap').textContent,/Blair/);
+  dom.window.close();
+});
+
+test('weekend choices restore per folder, preserve failed edits, reconcile roster and discard late saves',async()=>{
+  const t=await scopedAdmin(),{doc,run,dom}=t,el=id=>doc.getElementById(id);
+  t.rosters[1].push({id:3,name:'Casey',minHours:9,maxHours:15,isLead:false});await run('renderEmployees();renderWeekendUI()');
+  el('wkndStart').value='2026-09-04';el('wkndEnd').value='2026-12-20';el('wkndShiftPerson').checked=false;
+  run("WKND_FIXED={saturday_morning:1};WKND_ROTATING_ORDER=[3,1];WKND_EXCLUDED=[{date:'2026-11-27',label:'Signup hours'}];renderWeekendUI()");
+  dom.window.fetch=async(url,opts)=>opts?.method==='PUT'?{ok:false,status:500,json:async()=>({error:'Try again'})}:t.fetch(url,opts);
+  await el('wkndSaveChoicesBtn').onclick();assert.equal(run('WKND_ROTATING_ORDER[0]'),3);assert.match(el('wkndChoicesMsg').textContent,/Try again/);
+  dom.window.fetch=t.fetch;await el('wkndSaveChoicesBtn').onclick();assert.match(el('wkndChoicesMsg').textContent,/saved/);
+  el('folderSelect').value='2';await run('changeFolder()');assert.equal(el('wkndStart').value,'');assert.equal(el('wkndShiftPerson').checked,true);
+  el('folderSelect').value='1';await run('changeFolder()');assert.equal(el('wkndStart').value,'2026-09-04');assert.equal(el('wkndShiftPerson').checked,false);
+  assert.equal(run('WKND_FIXED.saturday_morning'),1);assert.equal(run('WKND_ROTATING_ORDER.join(",")'),'3,1');assert.match(el('wkndExcludedList').textContent,/Signup hours/);
+  // A removed fixed assignee is dropped and a newly added employee follows the saved order.
+  t.rosters[1].splice(0,1);t.rosters[1].push({id:4,name:'Devon',minHours:9,maxHours:15,isLead:false});await run('changeFolder()');
+  assert.equal(run('Object.keys(WKND_FIXED).length'),0);assert.equal(run('WKND_ROTATING_ORDER.join(",")'),'3,4');
+  let release;dom.window.fetch=(url,opts)=>opts?.method==='PUT'?new Promise(resolve=>release=()=>t.fetch(url,opts).then(resolve)):t.fetch(url,opts);
+  const pending=el('wkndSaveChoicesBtn').onclick();await el('wkndSaveChoicesBtn').onclick();assert.equal(el('wkndSaveChoicesBtn').disabled,true);
+  assert.equal(el('wkndStart').disabled,true);
+  el('folderSelect').value='2';await run('changeFolder()');release();await pending;
+  assert.equal(t.writes.length,2);assert.equal(t.writes[1].url,'/api/folders/1/weekend-choices');assert.equal(el('wkndChoicesMsg').textContent,'');
+  assert.equal(run('CONFIG.weekendChoices'),undefined);assert.equal(el('wkndStart').value,'');
+  dom.window.close();
+});
 
 test('folder changes refresh employees, settings, staffing and Weekend without changing the active tab',async()=>{
   const {doc,run,dom}=await scopedAdmin();

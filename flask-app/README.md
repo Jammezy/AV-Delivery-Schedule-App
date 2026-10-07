@@ -249,6 +249,12 @@ from current scheduling and revokes their edit grants in that folder while
 preserving response history, saved schedules, the employee identity, and other
 memberships.
 
+At the bottom of Employees, **Save all employees** saves every displayed lead
+choice and minimum/maximum hour target together. Every row must have whole,
+nonnegative hours with minimum no greater than maximum; invalid rows prevent
+the entire save. Individual **Save** and **Remove** actions remain available.
+If the roster changed in another session, refresh the folder before retrying.
+
 ### Weekday settings
 
 These keys come from `models.py`; saved folder values may differ from defaults.
@@ -440,6 +446,14 @@ using accumulated rotation counts and pool order to order candidates. It reports
 unfilled shifts and rotating counts; it does not apply the weekday deal-score
 objectives, lead-coverage switches, or weekly hour limits, and does not jointly
 optimize weekday plus weekend workloads.
+
+**Save weekend choices** at the bottom of the generator stores the selected
+folder's dates, excluded dates/notes, fixed assignments, rotation order, and
+starting-person setting. These choices return when reopening the folder or
+reloading the page. Dates may be left blank while preparing assignments.
+Employees removed from the roster are omitted on reopening; new employees
+join the end of the rotation. Each folder keeps independent choices in its
+existing settings record, without a schema migration.
 
 Weekend generation creates a preview. Its **Save schedule** button explicitly stores
 it; saved weekends can be reopened and deleted. Both new and reopened previews

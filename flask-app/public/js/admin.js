@@ -183,6 +183,37 @@ function setupTabs() {
 }
 
 // ---------------- employees ----------------
+let EMPLOYEES_SAVING = false;
+function employeeRowValues(tr) {
+  const minimum = tr.querySelector('[data-field="minHours"]');
+  const maximum = tr.querySelector('[data-field="maxHours"]');
+  if (![minimum, maximum].every(input => input.value.trim() !== '' && Number.isSafeInteger(Number(input.value)) && Number(input.value) >= 0) || Number(minimum.value) > Number(maximum.value)) return null;
+  return {id:Number(tr.dataset.id), isLead:tr.querySelector('[data-field="isLead"]').checked,
+    minHours:Number(minimum.value), maxHours:Number(maximum.value)};
+}
+
+$("saveAllEmployeesBtn").onclick = async () => {
+  if (!FOLDER_ID || FOLDER_LOADING || DELETION_BUSY || EMPLOYEES_SAVING) return;
+  const folderId = FOLDER_ID, revision = VIEW_REVISION;
+  const rows = [...$('employeeTableWrap').querySelectorAll('tbody tr')];
+  if (!rows.length) return;
+  const employees = rows.map(employeeRowValues);
+  const invalid = employees.indexOf(null);
+  if (invalid >= 0) {
+    $('employeesSaveMsg').textContent = `${rows[invalid].dataset.name}: enter nonnegative whole hours with minimum no greater than maximum.`;
+    return;
+  }
+  EMPLOYEES_SAVING = true; renderFolderControls();
+  $('employeesSaveMsg').textContent = 'Saving all employees…';
+  const response = await apiSend(`/api/folders/${folderId}/employees`, 'PUT', {employees});
+  if (revision !== VIEW_REVISION) return;
+  EMPLOYEES_SAVING = false; renderFolderControls();
+  if (!response?.ok) { $('employeesSaveMsg').textContent = response?.data.error || 'Could not save. Please retry.'; return; }
+  EMPLOYEE_DRAFTS.clear();
+  $('employeesSaveMsg').textContent = 'All employee choices saved for this folder.';
+  await refreshDiagnostics();
+};
+
 async function renderEmployees() {
   const folderId = FOLDER_ID, revision = VIEW_REVISION;
   const plan = await refreshStaffingPlan();
@@ -220,18 +251,20 @@ async function renderEmployees() {
       else input.value = draft[input.dataset.field];
     }
     for (const input of inputs) input.oninput = () => {
+      $('employeesSaveMsg').textContent = '';
       EMPLOYEE_DRAFTS.set(name, Object.fromEntries(inputs.map(el =>
         [el.dataset.field, el.type === "checkbox" ? el.checked : el.value])));
       renderStaffingPlan();
     };
     tr.querySelector('[data-action="save"]').onclick = async () => {
-      if (folderId !== FOLDER_ID || revision !== VIEW_REVISION || FOLDER_LOADING) return;
+      if (folderId !== FOLDER_ID || revision !== VIEW_REVISION || FOLDER_LOADING || EMPLOYEES_SAVING || DELETION_BUSY) return;
       const minimum = tr.querySelector('[data-field="minHours"]');
       const maximum = tr.querySelector('[data-field="maxHours"]');
       if (![minimum, maximum].every(input => input.value.trim() !== "" && Number.isSafeInteger(Number(input.value)) && Number(input.value) >= 0) || Number(minimum.value) > Number(maximum.value)) {
         alert("Enter nonnegative whole hours with minimum no greater than maximum."); return;
       }
       const token = TOKEN;
+      EMPLOYEES_SAVING = true; renderFolderControls();
       const controls = [...tr.querySelectorAll("input, button")];
       controls.forEach(el => el.disabled = true);
       const r = await apiSend(`/api/folders/${folderId}/employees/${tr.dataset.id}`, "PUT", {
@@ -239,8 +272,8 @@ async function renderEmployees() {
         minHours: tr.querySelector('[data-field="minHours"]').value,
         maxHours: tr.querySelector('[data-field="maxHours"]').value,
       });
-      controls.forEach(el => el.disabled = false);
       if (!TOKEN || TOKEN !== token || revision !== VIEW_REVISION || !r) return;
+      EMPLOYEES_SAVING = false; renderFolderControls();
       if (!r.ok) { alert(r.data.error || "Couldn't save."); return; }
       EMPLOYEE_DRAFTS.delete(name);
       tr.style.background = "#e6f4ea";
@@ -248,7 +281,7 @@ async function renderEmployees() {
       await refreshDiagnostics();
     };
     tr.querySelector('[data-action="delete"]').onclick = async () => {
-      if (folderId !== FOLDER_ID || revision !== VIEW_REVISION || FOLDER_LOADING) return;
+      if (folderId !== FOLDER_ID || revision !== VIEW_REVISION || FOLDER_LOADING || EMPLOYEES_SAVING || DELETION_BUSY) return;
       if (!confirm(`Remove ${name} from this folder? Saved response history and other folders will be preserved.`)) return;
       const result = await apiSend(`/api/folders/${folderId}/employees/${tr.dataset.id}`, "DELETE");
       if (!result?.ok) { if (result) alert(result.data.error); return; }
@@ -807,10 +840,43 @@ let WKND_EXCLUDED = [];
 let WKND_ROTATING_ORDER = [];
 let WKND_FIXED = {};
 let LAST_WKND_PREVIEW = null;
+let WEEKEND_CHOICES_SAVING = false;
+
+function loadWeekendChoices() {
+  const choices = CONFIG?.weekendChoices;
+  if (!choices) return;
+  $('wkndStart').value = choices.start_date || '';
+  $('wkndEnd').value = choices.end_date || '';
+  WKND_EXCLUDED = (choices.excluded_dates || []).map(item => ({...item}));
+  WKND_FIXED = {...choices.fixed_assignments};
+  WKND_ROTATING_ORDER = [...(choices.rotating_employees || [])];
+  $('wkndShiftPerson').checked = choices.shift_starting_person !== false;
+}
+
+function weekendFormChoices() {
+  return {start_date:$('wkndStart').value, end_date:$('wkndEnd').value,
+    excluded_dates:WKND_EXCLUDED.map(item => ({...item})), fixed_assignments:{...WKND_FIXED},
+    rotating_employees:[...WKND_ROTATING_ORDER], shift_starting_person:$('wkndShiftPerson').checked};
+}
+
+$('wkndSaveChoicesBtn').onclick = async () => {
+  if (!FOLDER_ID || FOLDER_LOADING || DELETION_BUSY || WEEKEND_CHOICES_SAVING) return;
+  const revision = VIEW_REVISION, folderId = FOLDER_ID;
+  WEEKEND_CHOICES_SAVING = true; renderFolderControls();
+  $('wkndChoicesMsg').textContent = 'Saving weekend choices…';
+  const response = await apiSend(`/api/folders/${folderId}/weekend-choices`, 'PUT', weekendFormChoices());
+  if (revision !== VIEW_REVISION) return;
+  WEEKEND_CHOICES_SAVING = false; renderFolderControls();
+  if (!response?.ok) { $('wkndChoicesMsg').textContent = response?.data.error || 'Could not save. Please retry.'; return; }
+  CONFIG.weekendChoices = response.data;
+  $('wkndChoicesMsg').textContent = 'Weekend choices saved for this folder.';
+};
 
 function clearWeekendView() {
+  WEEKEND_CHOICES_SAVING = false;
+  $('wkndShiftPerson').checked = true;
   LAST_WKND_PREVIEW = null; WKND_EXCLUDED = []; WKND_ROTATING_ORDER = []; WKND_FIXED = {};
-  for (const id of ["wkndMsg", "wkndPreviewArea", "wkndSavedSchedules", "wkndExcludedList"]) $(id).innerHTML = "";
+  for (const id of ["wkndMsg", "wkndChoicesMsg", "wkndPreviewArea", "wkndSavedSchedules", "wkndExcludedList"]) $(id).innerHTML = "";
   $("wkndFixedTable").querySelector("tbody").innerHTML = "";
   $("wkndRotatingTable").querySelector("tbody").innerHTML = "";
   for (const id of ["wkndStart", "wkndEnd", "newExclDate", "newExclLabel"]) $(id).value = "";
@@ -828,6 +894,8 @@ const WKND_SHIFTS = [
 
 function renderWeekendUI() {
   if (!FOLDER_ID || !CONFIG) return;
+  const ids = new Set(EMPLOYEES.map(e => e.id));
+  WKND_FIXED = Object.fromEntries(Object.entries(WKND_FIXED).filter(([,id]) => ids.has(id)));
   if (WKND_ROTATING_ORDER.length === 0 && EMPLOYEES.length > 0) {
     WKND_ROTATING_ORDER = EMPLOYEES.map(e => e.id);
   }
@@ -887,11 +955,15 @@ function renderWeekendUI() {
 }
 
 window.removeWkndExcluded = (i) => {
+  if (WEEKEND_CHOICES_SAVING || FOLDER_LOADING || DELETION_BUSY) return;
+  $('wkndChoicesMsg').textContent = '';
   WKND_EXCLUDED.splice(i, 1);
   renderWeekendUI();
 };
 
 $("addExclBtn").onclick = () => {
+  if (WEEKEND_CHOICES_SAVING || FOLDER_LOADING || DELETION_BUSY) return;
+  $('wkndChoicesMsg').textContent = '';
   const date = $("newExclDate").value;
   const label = $("newExclLabel").value.trim();
   if (!date) return;
@@ -902,6 +974,8 @@ $("addExclBtn").onclick = () => {
 };
 
 window.updateWkndFixed = (shiftKey, empId) => {
+  if (WEEKEND_CHOICES_SAVING || FOLDER_LOADING || DELETION_BUSY) return;
+  $('wkndChoicesMsg').textContent = '';
   if (empId) {
     WKND_FIXED[shiftKey] = parseInt(empId, 10);
   } else {
@@ -911,6 +985,8 @@ window.updateWkndFixed = (shiftKey, empId) => {
 };
 
 window.moveWkndRotating = (idx, dir) => {
+  if (WEEKEND_CHOICES_SAVING || FOLDER_LOADING || DELETION_BUSY) return;
+  $('wkndChoicesMsg').textContent = '';
   if (idx + dir < 0 || idx + dir >= WKND_ROTATING_ORDER.length) return;
   const tmp = WKND_ROTATING_ORDER[idx];
   WKND_ROTATING_ORDER[idx] = WKND_ROTATING_ORDER[idx + dir];
@@ -923,20 +999,14 @@ $("wkndHelpBtn").onclick = () => {
   popup.style.display = popup.style.display === "none" ? "block" : "none";
 };
 $("wkndHelpClose").onclick = () => $("wkndHelpPopup").style.display = "none";
+for (const id of ['wkndStart','wkndEnd','wkndShiftPerson']) $(id).oninput = () => $('wkndChoicesMsg').textContent = '';
 
 $("wkndGenerateBtn").onclick = async () => {
-  if (!FOLDER_ID) return;
+  if (!FOLDER_ID || FOLDER_LOADING || DELETION_BUSY || WEEKEND_CHOICES_SAVING) return;
   const revision = VIEW_REVISION;
   $("wkndGenerateBtn").disabled = true;
   $("wkndMsg").textContent = "Generating preview...";
-  const config = {
-    start_date: $("wkndStart").value,
-    end_date: $("wkndEnd").value,
-    excluded_dates: WKND_EXCLUDED,
-    fixed_assignments: WKND_FIXED,
-    rotating_employees: WKND_ROTATING_ORDER,
-    shift_starting_person: $("wkndShiftPerson").checked
-  };
+  const config = weekendFormChoices();
 
   const res = await apiSend('/api/generate_weekend', 'POST', { config, folderId: FOLDER_ID });
   if (revision !== VIEW_REVISION) return;
