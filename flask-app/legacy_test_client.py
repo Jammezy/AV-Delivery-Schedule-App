@@ -5,7 +5,7 @@ sheet. Security tests use FlaskClient directly, never this adapter.
 """
 import os,secrets,uuid
 from cryptography.fernet import Fernet
-from flask.testing import FlaskClient
+from generation_test_client import GenerationFixtureClient as FlaskClient
 os.environ.setdefault('COLLECTION_ENCRYPTION_KEY',Fernet.generate_key().decode())
 os.environ.setdefault('COLLECTION_VERIFIER_KEY',secrets.token_hex(32))
 

@@ -17,18 +17,20 @@ from peewee import DatabaseError
 from models import (
     db, init_db, Employee, Availability, get_config, save_config,
     normalize_level, Folder, SubmissionState, FolderAvailability,
-    SavedSchedule, SavedWeekendSchedule, AdminSession, write_transaction,
+    SavedSchedule, SavedWeekendSchedule, GenerationJob, AdminSession, write_transaction,
     IntakeSubmission, CollectionCode, CollectionSettings, EditGrant, FolderEmployee, FolderConfig,
     folder_members,
 )
 import solver as solver_module
 import weekend_generator
+import generation_jobs
 from boundary import boundary_context, consent_status
 from request_retention import RequestRetention
 
 app = Flask(__name__, static_folder="public", static_url_path="")
 app.logger.setLevel('INFO')
 app.config['REQUEST_RETENTION_ENABLED'] = os.environ.get('REQUEST_RETENTION_ENABLED', 'true') == 'true'
+app.config['GENERATION_RUNNER_ENABLED'] = True
 request_retention = RequestRetention()
 
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
@@ -72,6 +74,8 @@ def resolve_name(raw):
 # --- database connection per request -------------------------------------
 @app.before_request
 def _open_db():
+    if request.path == '/healthz' or not request.path.startswith('/api/'):
+        return
     if db.is_closed():
         db.connect(reuse_if_open=True)
     if request.path.startswith('/api/') and app.config['REQUEST_RETENTION_ENABLED']:
@@ -534,13 +538,18 @@ def deletion_scope(folder):
     counts = {}
     for key, model in (("availabilitySubmissions", FolderAvailability),
                        ("weekdaySchedules", SavedSchedule),
+                       ("generationJobs", GenerationJob),
                        ("weekendSchedules", SavedWeekendSchedule),
                        ("unverifiedResponses", IntakeSubmission),
                        ("collectionCodes", CollectionCode),
                        ("folderEmployees", FolderEmployee), ("folderSettings", FolderConfig)):
         include(key)
         counts[key] = 0
-        for row in model.select().where(model.folder == folder.id).order_by(model.id).dicts():
+        query = model.select().where(model.folder == folder.id).order_by(model.id)
+        if model is GenerationJob:
+            # Progress/heartbeat updates must not invalidate a deletion preview.
+            query = query.select(GenerationJob.id, GenerationJob.fingerprint)
+        for row in query.dicts():
             include(row)
             counts[key] += 1
     return {"folder": folder_json(folder), "counts": counts,
@@ -815,6 +824,9 @@ def generate():
     ids = data.get("employeeIds")
     if not isinstance(ids, list) or not ids or any(type(i) is not int for i in ids) or len(ids) != len(set(ids)):
         abort(400, "Select at least one employee with submitted availability.")
+    seed = data.get("seed")
+    if seed is not None and (type(seed) is not int or not 0 <= seed < 2**31):
+        abort(400, "Invalid generation seed.")
     with write_transaction():
         folder = folder_or_404(data.get("folderId"))
         for employee_id in ids:
@@ -828,21 +840,49 @@ def generate():
         freeze_consent(cfg, rows, folder.id)
         submissions = [submission_json(r, cfg) for r in rows]
         input_version = generation_input_version(rows)
-    seed = data.get("seed")
-    if seed is not None and (type(seed) is not int or not 0 <= seed < 2**31):
-        abort(400, "Invalid generation seed.")
-    result = solver_module.generate_schedule(roster, availability, cfg, seed=seed)
+        if not 1 <= int(cfg['solverTimeLimit']) <= 1800:
+            abort(400, 'Set the solver time limit between 1 and 1800 seconds.')
+        payload = dict(employees=roster, availability=availability, config=cfg, seed=seed,
+                       submissions=submissions, employeeIds=ids, folder=folder_json(folder),
+                       folderVersion=folder.created_at.isoformat() + 'Z',
+                       inputVersion=input_version, requestId=data.get('requestId'))
+        job = generation_jobs.enqueue(payload)
+        response = generation_jobs.describe(job)
+    if app.config['GENERATION_RUNNER_ENABLED']:
+        generation_jobs.wake()
+    return jsonify(response), 202
+
+
+@app.get('/api/folders/<int:folder_id>/generation-jobs/latest')
+@app.get('/api/folders/<int:folder_id>/generation-jobs/<job_id>')
+@require_admin
+def generation_status(folder_id, job_id=None):
+    folder_or_404(folder_id)
+    query = GenerationJob.select().where(GenerationJob.folder == folder_id)
+    job = query.where(GenerationJob.id == job_id).first() if job_id else query.order_by(GenerationJob.created_at.desc()).first()
+    if not job and job_id:
+        abort(404, 'Generation job not found in this folder.')
+    response = generation_jobs.describe(job) if job else None
+    if job and job.status in generation_jobs.ACTIVE and app.config['GENERATION_RUNNER_ENABLED']:
+        generation_jobs.wake()
+    return jsonify(response)
+
+
+@app.post('/api/folders/<int:folder_id>/generation-jobs/<job_id>/cancel')
+@require_admin
+def cancel_generation(folder_id, job_id):
     with write_transaction():
-        recheck_generation_folder(folder)
-        recheck_generation_inputs(folder, input_version, ids)
-        if result["status"] not in ("OPTIMAL", "FEASIBLE"):
-            return jsonify(result)
-        result.update(employees=roster, config=cfg)
-        snapshot = {"result": result, "submissions": submissions, "employeeIds": ids,
-                    "folder": folder_json(folder)}
-        saved = SavedSchedule.create(folder=folder, snapshot_json=json.dumps(snapshot))
-    result["savedScheduleId"] = saved.id
-    return jsonify(result)
+        folder_or_404(folder_id)
+        job = GenerationJob.get_or_none((GenerationJob.id == job_id) & (GenerationJob.folder == folder_id))
+        if not job:
+            abort(404, 'Generation job not found in this folder.')
+        if job.status in generation_jobs.ACTIVE:
+            job.status = 'cancelled'
+            job.owner = job.lease_until = None
+            job.finished_at = now()
+            job.save()
+        response = generation_jobs.describe(job)
+    return jsonify(response)
 
 
 @app.get("/api/folders/<int:folder_id>/schedules")
@@ -887,4 +927,7 @@ from collection_codes import register as register_collection_codes
 register_collection_codes(app, require_admin, permission_version, body, folder_or_404)
 
 if __name__ == "__main__":
+    if not db.is_closed():
+        db.close()
+    generation_jobs.wake()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)

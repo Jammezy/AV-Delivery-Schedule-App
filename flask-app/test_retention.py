@@ -147,7 +147,7 @@ class RetentionTests:
             newer = Folder.create(name='Young empty', created_at=CUTOFF)
             archived = Folder.create(name='Old archived', created_at=OLD, archived=True)
         result = self.cleanup(apply=True)
-        self.assertEqual(result['deleted'], dict(availability=1, weekdaySchedules=1, weekendSchedules=1, legacyAvailability=1, folders=1, intakeResponses=0, collectionCodes=0))
+        self.assertEqual(result['deleted'], dict(availability=1, weekdaySchedules=1, weekendSchedules=1, legacyAvailability=1, folders=1, intakeResponses=0, collectionCodes=0, generationJobs=0))
         with db.connection_context():
             self.assertIsNotNone(Folder.get_or_none(Folder.id == folder_id))
             self.assertIsNotNone(Folder.get_or_none(Folder.id == newer.id))
