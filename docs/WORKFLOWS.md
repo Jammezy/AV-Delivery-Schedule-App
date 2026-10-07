@@ -115,8 +115,11 @@ and Sunday shifts, excluded dates, fixed assignments, and a rotating employee
 pool. An employee must be available for the full shift and can work at most one
 shift in a given weekend. This generator uses its own rotation logic rather than
 the weekday fairness objectives or weekly hour/lead constraints. Unfilled shifts
-are reported, and previews can be saved and reopened separately. Excel export
-currently covers weekday schedules.
+are reported, and previews can be saved and reopened separately. The formatted
+weekend preview and Excel download include dated assignments, shifts grouped by
+employee, and a separate voluntary signup section for excluded weekend dates.
+Excluded shifts skip fixed assignments and rotation and do not count as assigned
+hours; the Excel signup sheet leaves employee cells blank for supervisors.
 
 ## Persistence, retention, and hosting
 

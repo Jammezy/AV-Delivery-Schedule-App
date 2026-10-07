@@ -23,7 +23,8 @@ staffing requirements, preferred hours, and opening and closing duties.
 - **Plan weekends:** use a separate fixed-shift rotation generator with date ranges,
   exclusions, and recurring assignments.
 - **Save and export:** reopen database-backed schedule snapshots and export
-  weekday schedules to Excel with fairness results.
+  weekday schedules to Excel with fairness results, and formatted weekend
+  schedules with excluded-date signup sheets.
 
 ## How it is built
 

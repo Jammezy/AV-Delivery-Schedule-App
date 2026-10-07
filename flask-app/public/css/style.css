@@ -200,6 +200,37 @@ table.data-table tbody tr:nth-child(even) { background: #fafbfc; }
 .printable-schedule .day-header { background: var(--navy); color: white; font-weight: 700; }
 .printable-schedule .sub-header { background: var(--grey); font-weight: 700; }
 
+/* Semester weekend handout, matching the spreadsheet's pastel sections. */
+.weekend-formatted { margin-top:16px; color:#202020; }
+.weekend-title { background:#e99b9b; text-align:center; padding:18px; font-size:1.65rem; margin-bottom:0; }
+.weekend-range { text-align:center; margin:0; padding:8px; background:#fce5dc; }
+.weekend-columns { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:24px; margin:20px 0; align-items:start; }
+.weekend-table { border-collapse:collapse; width:100%; font-size:.88rem; }
+.weekend-table caption { text-align:left; font-weight:700; padding:8px 0; }
+.weekend-table td, .weekend-table th { border:1px solid #777; padding:9px 10px; text-align:left; vertical-align:middle; overflow-wrap:anywhere; }
+.weekend-table thead th { background:#d9d9d9; }
+.weekend-table small { display:block; margin-top:4px; font-size:.75rem; }
+.weekend-assignments td { background:#d9ead3; }
+.weekend-assignments th:first-child { width:65%; }
+.weekend-assignments .weekend-day-5 { background:#cfe2f3; }
+.weekend-assignments .weekend-day-6 { background:#e2ddf2; }
+.weekend-assignments .weekend-day-0 { background:#fff2cc; }
+.weekend-assignments .weekend-unfilled td:last-child { background:#fdd; }
+.weekend-people tbody th { background:#f4cccc; width:30%; font-weight:500; }
+.weekend-people tbody td { background:white; }
+.weekend-people tbody tr:nth-child(odd) td { background:#fce5dc; }
+.weekend-signups td { background:#fff2cc; }
+.weekend-signups td:last-child { background:white; min-width:100px; }
+.weekend-details { margin-top:20px; }
+.weekend-details summary { cursor:pointer; font-weight:600; margin-bottom:12px; }
+@media (max-width:900px) { .weekend-columns { grid-template-columns:minmax(0,1fr); gap:12px; } }
+@media print {
+  .weekend-formatted { print-color-adjust:exact; -webkit-print-color-adjust:exact; }
+  .weekend-columns { grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
+  .weekend-table tr { break-inside:avoid; }
+  .weekend-details { display:none; }
+}
+
 .tabs { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
 .tabs button { background: var(--grey); color: var(--text); }
 .tabs button.active { background: var(--navy); color: white; }

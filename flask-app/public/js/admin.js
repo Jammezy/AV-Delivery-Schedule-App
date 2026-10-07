@@ -835,7 +835,7 @@ function renderWeekendUI() {
   // Render excluded dates
   const exclHtml = WKND_EXCLUDED.map((excl, i) =>
     `<div class="row" style="margin-bottom:4px;">
-       <span>${excl.date} ${excl.label ? '('+excl.label+')' : ''}</span>
+       <span>${escapeHtml(excl.date)} ${excl.label ? '('+escapeHtml(excl.label)+')' : ''}</span>
        <button class="secondary" onclick="removeWkndExcluded(${i})">Remove</button>
      </div>`
   ).join('');
@@ -847,7 +847,7 @@ function renderWeekendUI() {
     let options = `<option value="">-- Rotation --</option>`;
     EMPLOYEES.forEach(e => {
       const sel = (WKND_FIXED[s.key] == e.id) ? "selected" : "";
-      options += `<option value="${e.id}" ${sel}>${e.name}</option>`;
+      options += `<option value="${e.id}" ${sel}>${escapeHtml(e.name)}</option>`;
     });
     return `<tr>
       <td>${s.key}</td>
@@ -875,7 +875,7 @@ function renderWeekendUI() {
 
     return `<tr style="${style}">
       <td>${idx + 1}</td>
-      <td>${e.name}${fixedNote}</td>
+      <td>${escapeHtml(e.name)}${fixedNote}</td>
       <td>
         <button class="secondary" ${idx === 0 ? 'disabled' : ''} onclick="moveWkndRotating(${idx}, -1)">Up</button>
         <button class="secondary" ${idx === WKND_ROTATING_ORDER.length - 1 ? 'disabled' : ''} onclick="moveWkndRotating(${idx}, 1)">Down</button>
@@ -948,30 +948,183 @@ $("wkndGenerateBtn").onclick = async () => {
   renderWeekendPreview(res.data);
 };
 
+// Old saved previews did not contain signup_shifts. Rebuild only that section
+// from their saved exclusions, never from the current form or roster.
+function weekendSignupShifts(data) {
+  if (Array.isArray(data.signup_shifts)) return data.signup_shifts;
+  const cfg = data.config || {}, seen = new Set(), shifts = [];
+  for (const exclusion of cfg.excluded_dates || []) {
+    const date = typeof exclusion === 'string' ? exclusion : exclusion.date;
+    if (!date || seen.has(date) || date < cfg.start_date || date > cfg.end_date) continue;
+    seen.add(date);
+    const day = new Date(`${date}T12:00:00Z`).getUTCDay();
+    const dayName = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][day];
+    for (const s of WKND_SHIFTS.filter(s => s.day === dayName)) {
+      const [start, end] = s.time.split('-').map(t => Number(t.split(':')[0]));
+      shifts.push({date, shift:{key:s.key, start, end}, assigned:null, origin:'signup',
+        label: typeof exclusion === 'string' ? '' : exclusion.label || ''});
+    }
+  }
+  return shifts.sort((a,b) => a.date.localeCompare(b.date) || a.shift.start - b.shift.start);
+}
+
+function weekendShiftLabel(ds) {
+  const date = new Date(`${ds.date}T12:00:00Z`);
+  return `${date.toLocaleDateString('en-US', {weekday:'long', month:'short', day:'numeric', year:'numeric', timeZone:'UTC'})}: ${hourLabel(ds.shift.start)}–${hourLabel(ds.shift.end)}`;
+}
+
+function weekendScheduleModel(data) {
+  const employees = data.employees || [], byId = new Map(employees.map(e => [e.id, e]));
+  const assignments = [...(data.assignments || [])].sort((a,b) => a.date.localeCompare(b.date) || a.shift.start - b.shift.start);
+  return {
+    assignments: assignments.map(ds => ({...ds, name: byId.get(ds.assigned)?.name || 'Unfilled'})),
+    people: employees.map(e => ({name:e.name, shifts:assignments.filter(ds => ds.assigned === e.id)})),
+    signups: weekendSignupShifts(data)
+  };
+}
+
+function renderFormattedWeekend(model, data) {
+  const range = data.config ? `${data.config.start_date} – ${data.config.end_date}` : '';
+  return `<div class="weekend-formatted">
+    <h3 class="weekend-title">Weekend Shifts</h3><p class="weekend-range">${escapeHtml(range)}</p>
+    <div class="weekend-columns">
+      <table class="weekend-table weekend-assignments"><caption>Rotating &amp; fixed assignments</caption>
+        <thead><tr><th scope="col">Weekend shift</th><th scope="col">Assignment</th></tr></thead>
+        <tbody>${model.assignments.map(ds => `<tr class="${ds.assigned ? '' : 'weekend-unfilled'}">
+          <td class="weekend-day-${new Date(`${ds.date}T12:00:00Z`).getUTCDay()}">${escapeHtml(weekendShiftLabel(ds))}</td>
+          <td>${escapeHtml(ds.name)}<small>${escapeHtml(ds.origin || 'Unfilled')}${ds.unfilled_reason ? ' · '+escapeHtml(ds.unfilled_reason) : ''}</small></td>
+        </tr>`).join('') || '<tr><td colspan="2">No rotating or fixed shifts in this range.</td></tr>'}</tbody></table>
+      <table class="weekend-table weekend-people"><caption>Weekend shifts by employee</caption>
+        <thead><tr><th scope="col">Employee</th><th scope="col">Assigned shifts</th></tr></thead>
+        <tbody>${model.people.map(e => `<tr><th scope="row">${escapeHtml(e.name)}</th>
+          <td>${e.shifts.map(ds => escapeHtml(weekendShiftLabel(ds))).join('<br>') || 'No assigned shifts'}</td></tr>`).join('') || '<tr><td colspan="2">No employees.</td></tr>'}</tbody></table>
+    </div>
+    <h3>Voluntary signup shifts — additional hours</h3>
+    <p>Excluded from fixed assignments and rotation. Supervisors can ask employees who wants to work these additional hours.</p>
+    <table class="weekend-table weekend-signups"><thead><tr><th scope="col">Weekend shift</th><th scope="col">Occasion / note</th><th scope="col">Employee signup</th></tr></thead>
+      <tbody>${model.signups.map(ds => `<tr><td>${escapeHtml(weekendShiftLabel(ds))}</td><td>${escapeHtml(ds.label || 'Excluded date')}</td><td>Open for signup</td></tr>`).join('') || '<tr><td colspan="3">No excluded weekend shifts in this range.</td></tr>'}</tbody></table>
+  </div>`;
+}
+
+function buildWeekendWorkbook(data) {
+  const model = weekendScheduleModel(data), wb = new ExcelJS.Workbook();
+  const border = {top:{style:'thin'},bottom:{style:'thin'},left:{style:'thin'},right:{style:'thin'}};
+  const colors = {title:'FFE99B9B', header:'FFD9D9D9', employee:'FFF4CCCC', alternate:'FFFCE5DC',
+    friday:'FFCFE2F3', saturday:'FFE2DDF2', sunday:'FFFFF2CC', assigned:'FFD9EAD3', unfilled:'FFFFDDDD'};
+  const fill = color => ({type:'pattern',pattern:'solid',fgColor:{argb:color}});
+  function cell(ws, row, col, value, color, bold = false) {
+    const c = ws.getCell(row,col); c.value = value;
+    c.font = {name:'Calibri',size:11,bold}; c.border = border;
+    c.alignment = {vertical:'middle',wrapText:true};
+    if (color) c.fill = fill(color);
+    return c;
+  }
+  function title(ws, text, columns) {
+    ws.mergeCells(1,1,1,columns);
+    const c = cell(ws,1,1,text,colors.title,true);
+    c.font = {name:'Calibri',size:22,bold:true}; c.alignment = {horizontal:'center',vertical:'middle'};
+    ws.getRow(1).height = 38;
+    ws.mergeCells(2,1,2,columns);
+    cell(ws,2,1,data.config ? `${data.config.start_date} – ${data.config.end_date}` : '',null);
+    ws.views = [{state:'frozen',ySplit:4}];
+    ws.pageSetup = {paperSize:9,orientation:'landscape',fitToPage:true,fitToWidth:1,fitToHeight:0,printTitlesRow:'1:4'};
+  }
+  const ws = wb.addWorksheet('Weekend Shifts');
+  [43,30,4,26,58].forEach((width,i) => ws.getColumn(i+1).width = width);
+  title(ws,'Weekend Shifts',5);
+  ['Weekend shift','Assignment',null,'Employee','Assigned shifts'].forEach((v,i) => {
+    if (v) cell(ws,4,i+1,v,colors.header,true);
+  });
+  // Excel caps row height at 409 points. Split long semester lists into
+  // continuation rows so every fixed occurrence remains readable in print.
+  const peopleRows = model.people.flatMap((e,index) => {
+    const rows = [];
+    for (let offset=0; offset<Math.max(e.shifts.length,1); offset+=10) {
+      rows.push({...e, name:e.name+(offset ? ' (continued)' : ''), shifts:e.shifts.slice(offset,offset+10), index});
+    }
+    return rows;
+  });
+  model.assignments.forEach((ds,i) => {
+    const row = i+5;
+      const day = new Date(`${ds.date}T12:00:00Z`).getUTCDay();
+      cell(ws,row,1,weekendShiftLabel(ds),day === 5 ? colors.friday : day === 6 ? colors.saturday : colors.sunday);
+      cell(ws,row,2,`${ds.name}\n${ds.origin || 'Unfilled'}${ds.unfilled_reason ? ' · '+ds.unfilled_reason : ''}`,ds.assigned ? colors.assigned : colors.unfilled);
+  });
+  let personRow = 5;
+  peopleRows.forEach(e => {
+    const span = Math.max(1,Math.ceil(e.shifts.length*24/60));
+    if (span > 1) {
+      ws.mergeCells(personRow,4,personRow+span-1,4);
+      ws.mergeCells(personRow,5,personRow+span-1,5);
+    }
+    cell(ws,personRow,4,e.name,colors.employee);
+    cell(ws,personRow,5,e.shifts.map(weekendShiftLabel).join('\n') || 'No assigned shifts',e.index%2 === 0 ? colors.alternate : 'FFFFFFFF');
+    personRow += span;
+  });
+  for (let row=5; row<=Math.max(ws.rowCount,personRow-1); row++) ws.getRow(row).height = 60;
+  const signup = wb.addWorksheet('Signup Shifts');
+  [46,34,30].forEach((width,i) => signup.getColumn(i+1).width = width);
+  title(signup,'Voluntary Signup Shifts',3);
+  signup.mergeCells(3,1,3,3);
+  cell(signup,3,1,'Additional hours excluded from fixed assignments and rotation. Supervisors can collect employee signups below.',null);
+  signup.getRow(3).height = 36;
+  ['Weekend shift','Occasion / note','Employee signup'].forEach((v,i) => cell(signup,4,i+1,v,colors.header,true));
+  model.signups.forEach((ds,i) => {
+    cell(signup,i+5,1,weekendShiftLabel(ds),colors.sunday);
+    cell(signup,i+5,2,ds.label || 'Excluded date',colors.sunday);
+    cell(signup,i+5,3,null,'FFFFFFFF'); signup.getRow(i+5).height = 44;
+  });
+  if (!model.signups.length) cell(signup,5,1,'No excluded weekend shifts in this range.',null);
+  ws.pageSetup.printArea = `A1:E${Math.max(ws.rowCount,5)}`;
+  signup.pageSetup.printArea = `A1:C${Math.max(signup.rowCount,5)}`;
+  return wb;
+}
+
+async function downloadWeekendExcel() {
+  if (!LAST_WKND_PREVIEW || !FOLDER_ID || DELETION_BUSY) return;
+  const revision = VIEW_REVISION, data = LAST_WKND_PREVIEW, button = $('wkndDownloadBtn');
+  button.disabled = true;
+  try {
+    const buf = await buildWeekendWorkbook(data).xlsx.writeBuffer();
+    if (revision !== VIEW_REVISION || LAST_WKND_PREVIEW !== data || DELETION_BUSY) return;
+    const url = URL.createObjectURL(new Blob([buf], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
+    const a = document.createElement('a'); a.href = url;
+    a.download = `Weekend_Schedule${data.config ? '_'+data.config.start_date+'_'+data.config.end_date : ''}.xlsx`;
+    a.click(); URL.revokeObjectURL(url);
+  } catch (_) {
+    if (revision === VIEW_REVISION) $('wkndMsg').textContent = 'Excel download failed. Please retry; if the Excel library did not load, refresh the page.';
+  } finally {
+    if (revision === VIEW_REVISION && LAST_WKND_PREVIEW === data) button.disabled = false;
+  }
+}
+
 function renderWeekendPreview(data) {
   const revision = VIEW_REVISION, folderId = FOLDER_ID;
   LAST_WKND_PREVIEW = data;
   const empById = {};
   data.employees.forEach(e => { empById[e.id] = e; });
 
-  let html = data.folderVersion ? `<div class="row"><button id="wkndSaveBtn">Save schedule</button></div>` : "";
+  let html = `<div class="row">${data.folderVersion ? '<button id="wkndSaveBtn">Save schedule</button>' : ''}
+    <button id="wkndDownloadBtn" class="secondary">Download .xlsx</button></div>`;
+  html += renderFormattedWeekend(weekendScheduleModel(data), data);
+  html += '<details class="weekend-details"><summary>Assignment details and totals</summary>';
 
   // Table of assignments
   html += `<h3>Assignments</h3><table class="data-table">
     <thead><tr><th>Friday (Weekend ID)</th><th>Date</th><th>Shift</th><th>Assigned</th><th>Type</th><th>Note</th></tr></thead><tbody>`;
 
   data.assignments.forEach(ds => {
-    const empName = ds.assigned ? empById[ds.assigned].name : "<strong>Unfilled</strong>";
+    const empName = ds.assigned ? escapeHtml(empById[ds.assigned]?.name || 'Unknown employee') : "<strong>Unfilled</strong>";
     const origin = ds.origin || "";
     const note = ds.unfilled_reason || "";
     const isUnfilled = !ds.assigned ? "style='background-color:#ffeeee;'" : "";
     html += `<tr ${isUnfilled}>
-      <td>${ds.friday}</td>
-      <td>${ds.date}</td>
-      <td>${ds.shift.key}</td>
+      <td>${escapeHtml(ds.friday)}</td>
+      <td>${escapeHtml(ds.date)}</td>
+      <td>${escapeHtml(ds.shift.key)}</td>
       <td>${empName}</td>
-      <td>${origin}</td>
-      <td>${note}</td>
+      <td>${escapeHtml(origin)}</td>
+      <td>${escapeHtml(note)}</td>
     </tr>`;
   });
   html += `</tbody></table>`;
@@ -990,22 +1143,23 @@ function renderWeekendPreview(data) {
     let total = fixed + rotating;
     let notes = [];
     if (total === 0) {
-      if (Object.values(WKND_FIXED).includes(e.id)) notes.push("Fixed occurrences were excluded/outside range.");
+      if (Object.values(data.config?.fixed_assignments || {}).includes(e.id)) notes.push("Fixed occurrences were excluded/outside range.");
       else if (!data.effective_pool.includes(e.id)) notes.push("Cannot cover any remaining rotating shift in full or not in pool.");
       else notes.push("No assignment before semester ended; limited openings.");
     }
 
     html += `<tr>
-      <td>${e.name}</td>
+      <td>${escapeHtml(e.name)}</td>
       <td>${fixed}</td>
       <td>${rotating}</td>
       <td>${total}</td>
       <td>${notes.join(" ")}</td>
     </tr>`;
   });
-  html += `</tbody></table>`;
+  html += `</tbody></table></details>`;
 
   $("wkndPreviewArea").innerHTML = `<div class="scroll-x">${html}</div>`;
+  $('wkndDownloadBtn').onclick = downloadWeekendExcel;
   if (!$("wkndSaveBtn")) return;
   $("wkndSaveBtn").onclick = async () => {
     if (revision !== VIEW_REVISION || folderId !== FOLDER_ID) return;

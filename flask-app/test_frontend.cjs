@@ -773,3 +773,68 @@ test('weekend generate and save use API response data and retain the folder iden
   const stale=doc.getElementById('wkndSaveBtn').onclick;run('VIEW_REVISION++; FOLDER_ID=2; clearWeekendView()');saved=null;
   await stale();assert.equal(saved,null);dom.window.close();
 });
+
+test('weekend handout and serialized Excel retain snapshot assignments, signups and formatting',async()=>{
+  const {doc,run,dom}=await admin(); dom.window.ExcelJS=ExcelJS;
+  const data={folderId:1,employees:[{id:1,name:'Alex <&>'},{id:2,name:'Blair'},{id:3,name:'No shifts'}],
+    config:{start_date:'2026-09-04',end_date:'2026-09-13',fixed_assignments:{friday_evening:1},
+      excluded_dates:[{date:'2026-09-05',label:'Holiday <&>'}]},
+    assignments:[
+      {date:'2026-09-13',shift:{key:'sunday_afternoon',start:12,end:17},assigned:2,origin:'rotating'},
+      {date:'2026-09-04',shift:{key:'friday_evening',start:19,end:22},assigned:1,origin:'fixed'},
+      {date:'2026-09-06',shift:{key:'sunday_morning',start:7,end:12},assigned:null,origin:null,unfilled_reason:'No eligible employee <&>'}],
+    rotating_counts:{2:1},effective_pool:[2]};
+  run(`WKND_EXCLUDED=[{date:'2030-01-01'}]; WKND_FIXED={friday_evening:3}; EMPLOYEES=[]; renderWeekendPreview(${JSON.stringify(data)})`);
+  const area=doc.getElementById('wkndPreviewArea');
+  assert.match(area.textContent,/Friday, Sep 4, 2026: 7PM–10PM/);
+  assert.match(area.textContent,/Sunday, Sep 13, 2026: 12PM–5PM/);
+  assert.match(area.textContent,/Holiday <&>/); assert.match(area.textContent,/No assigned shifts/);
+  assert.equal(area.querySelectorAll('.weekend-signups tbody tr').length,3);
+  assert.equal(area.querySelectorAll('.weekend-unfilled').length,1);
+  assert.equal(area.querySelectorAll('img,script').length,0);
+  assert.ok(doc.getElementById('wkndDownloadBtn')); assert.equal(doc.getElementById('wkndSaveBtn'),null);
+  const wb=run('buildWeekendWorkbook(LAST_WKND_PREVIEW)'), reopened=new ExcelJS.Workbook();
+  await reopened.xlsx.load(await wb.xlsx.writeBuffer());
+  const ws=reopened.getWorksheet('Weekend Shifts'), signup=reopened.getWorksheet('Signup Shifts');
+  assert.equal(ws.getCell('A1').value,'Weekend Shifts'); assert.equal(ws.getCell('E1').value,'Weekend Shifts');
+  assert.equal(ws.getCell('A5').value,'Friday, Sep 4, 2026: 7PM–10PM');
+  assert.equal(ws.getCell('B5').value,'Alex <&>\nfixed');
+  assert.equal(ws.getCell('D5').value,'Alex <&>');
+  assert.equal(ws.getCell('E6').value,'Sunday, Sep 13, 2026: 12PM–5PM');
+  assert.equal(ws.getCell('A5').fill.fgColor.argb,'FFCFE2F3');
+  assert.equal(ws.getCell('B5').fill.fgColor.argb,'FFD9EAD3');
+  assert.equal(ws.getCell('B6').fill.fgColor.argb,'FFFFDDDD');
+  assert.equal(ws.views[0].ySplit,4); assert.equal(ws.pageSetup.fitToWidth,1);
+  assert.equal(ws.getCell('E6').alignment.wrapText,true); assert.equal(ws.getCell('E6').border.bottom.style,'thin');
+  assert.equal(signup.getCell('A5').value,'Saturday, Sep 5, 2026: 7AM–12PM');
+  assert.equal(signup.getCell('B5').value,'Holiday <&>'); assert.equal(signup.getCell('C5').value,null);
+  assert.equal(signup.getCell('A7').value,'Saturday, Sep 5, 2026: 5PM–10PM');
+  assert.equal(signup.pageSetup.printArea,'A1:C7');
+  // Backend-provided signup rows are authoritative; no double reconstruction.
+  data.signup_shifts=[];
+  assert.equal(run(`weekendScheduleModel(${JSON.stringify(data)}).signups.length`),0);
+  // Long fixed lists split into printable continuation rows within Excel's height limit.
+  data.assignments=Array.from({length:24},(_,i)=>({...data.assignments[1],date:`2026-09-${String(i+4).padStart(2,'0')}`}));
+  const long=run(`buildWeekendWorkbook(${JSON.stringify(data)})`).getWorksheet('Weekend Shifts');
+  assert.equal(long.getCell('D9').value,'Alex <&> (continued)');
+  assert.equal(long.getCell('E13').value.split('\n').length,4);
+  long.eachRow(row=>assert.ok((row.height || 15)<=409));
+  dom.window.close();
+});
+
+test('weekend signup recovery respects saved range and download aborts after folder changes',async()=>{
+  const {doc,run,dom}=await admin();dom.window.ExcelJS=ExcelJS;
+  const data={employees:[],assignments:[],rotating_counts:{},effective_pool:[],config:{start_date:'2026-09-06',end_date:'2026-09-07',
+    excluded_dates:['2026-09-05','2026-09-06','2026-09-06','2026-09-07','2026-09-11']}};
+  run(`renderWeekendPreview(${JSON.stringify(data)})`);
+  assert.equal(doc.querySelectorAll('.weekend-signups tbody tr').length,2);
+  let resolveWrite,downloads=0;
+  dom.window.URL.createObjectURL=()=>{downloads++;return 'blob:test'};
+  dom.window.URL.revokeObjectURL=()=>{};
+  run('buildWeekendWorkbook=()=>({xlsx:{writeBuffer:()=>new Promise(resolve=>window.resolveWeekendWrite=resolve)}})');
+  const pending=run('downloadWeekendExcel()');resolveWrite=dom.window.resolveWeekendWrite;
+  assert.equal(doc.getElementById('wkndDownloadBtn').disabled,true);
+  run('VIEW_REVISION++;FOLDER_ID=2;clearWeekendView()');resolveWrite(new Uint8Array());await pending;
+  assert.equal(downloads,0);assert.equal(doc.getElementById('wkndDownloadBtn'),null);
+  dom.window.close();
+});

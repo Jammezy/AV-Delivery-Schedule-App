@@ -711,6 +711,7 @@ def generate_weekend():
     return jsonify({
         "status": "SUCCESS",
         "assignments": result["assignments"],
+        "signup_shifts": result["signup_shifts"],
         "effective_pool": result["effective_pool"],
         "rotating_counts": result["rotating_counts"],
         "employees": roster,

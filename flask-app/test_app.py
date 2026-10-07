@@ -392,7 +392,7 @@ class AppTests(RetentionTests, FolderDeletionTests, unittest.TestCase):
         config = {
             "start_date": "2024-09-02",
             "end_date": "2024-09-08",
-            "excluded_dates": [],
+            "excluded_dates": [{"date": "2024-09-08", "label": "Extra hours"}],
             "fixed_assignments": {},
             "rotating_employees": [1, 2, 3],
             "shift_starting_person": True
@@ -407,6 +407,10 @@ class AppTests(RetentionTests, FolderDeletionTests, unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         data = res.json
         self.assertEqual(data["status"], "SUCCESS")
+        self.assertEqual(len(data['signup_shifts']), 2)
+        self.assertTrue(all(s['origin'] == 'signup' and s['assigned'] is None and
+                            s['label'] == 'Extra hours' for s in data['signup_shifts']))
+        self.assertNotIn('2024-09-08', [s['date'] for s in data['assignments']])
 
         assignments = data["assignments"]
         self.assertTrue(len(assignments) > 0)
@@ -426,6 +430,7 @@ class AppTests(RetentionTests, FolderDeletionTests, unittest.TestCase):
         res4 = self.client.get(f"/api/folders/{folder_id}/weekend_schedules/{saved_id}", headers=self.headers)
         self.assertEqual(res4.status_code, 200)
         self.assertEqual(res4.json["status"], "SUCCESS")
+        self.assertEqual(res4.json['signup_shifts'], data['signup_shifts'])
 
         res5 = self.client.delete(f"/api/folders/{folder_id}/weekend_schedules/{saved_id}", headers=self.headers)
         self.assertEqual(res5.status_code, 400)
