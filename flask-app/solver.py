@@ -710,7 +710,18 @@ def boundary_report(work_out, employees, availability, cfg):
     return rows
 
 
-def generate_schedule(employees, availability, cfg, seed=None, incumbent=None, progress=None):
+def schedule_quality(result, employees, cfg):
+    """Compare actual assignments, including checkpoints from alternative runs."""
+    work = result['work']
+    return (result['fairnessFloor'],
+            sum(r['preferredSatisfied'] for r in result['fairness']),
+            -sum(r['overrun'] for r in result['boundarySummary']),
+            sum(any(e['name'] in work[d].get(hour, work[d].get(str(hour), []))
+                    for d in cfg['days'] if required_staff(d, hour, cfg) > 0)
+                for e in employees for hour in (int(cfg['hourStart']), int(cfg['lateHourStart']))))
+
+
+def generate_schedule(employees, availability, cfg, seed=None, incumbent=None, progress=None, excluded_work=None):
     """Integer lexicographic optimization under one wall-clock deadline.
 
     A feasible fairness incumbent is kept if proof consumes the budget. Refinement
@@ -724,6 +735,21 @@ def generate_schedule(employees, availability, cfg, seed=None, incumbent=None, p
         return {'status': 'IMPOSSIBLE', 'diagnostics': diagnostics}
     built = _add_fairness(_build(employees, availability, cfg), employees, availability, cfg)
     model = built['model']
+    # Exclude complete employee/hour assignments, not merely slot ordering.
+    # Ignore older snapshots with incompatible days, hours or employees.
+    names = {e['name'] for e in employees}
+    excluded_count = 0
+    for work in excluded_work or []:
+        if (set(work) != set(built['days']) or
+            any({int(h) for h in work[d]} != set(built['hours']) for d in built['days']) or
+            any(not set(assigned).issubset(names) for hours in work.values() for assigned in hours.values())):
+            continue
+        differences = []
+        for (i, d, h), var in built['work'].items():
+            assigned = employees[i]['name'] in work[d].get(h, work[d].get(str(h), []))
+            differences.append(var.Not() if assigned else var)
+        model.AddBoolOr(differences)
+        excluded_count += 1
     # Only the job service supplies a baseline, matched to immutable inputs and
     # all scheduling rules. Execution settings (time/threads/seed) may differ.
     baseline = incumbent
@@ -744,13 +770,7 @@ def generate_schedule(employees, availability, cfg, seed=None, incumbent=None, p
     best = baseline
 
     def quality(result):
-        work = result['work']
-        return (result['fairnessFloor'],
-                sum(r['preferredSatisfied'] for r in result['fairness']),
-                -sum(r['overrun'] for r in result['boundarySummary']),
-                sum(any(e['name'] in work[d][hour] for d in built['days']
-                        if required_staff(d, hour, cfg) > 0)
-                    for e in employees for hour in (int(cfg['hourStart']), int(cfg['lateHourStart']))))
+        return schedule_quality(result, employees, cfg)
 
     def pack(work_and_weekly, completed_stages):
         work, weekly = work_and_weekly
@@ -786,6 +806,9 @@ def generate_schedule(employees, availability, cfg, seed=None, incumbent=None, p
                                 maximize=None if minimize else expression, callback=Improvements())
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             if incumbent is None and best is None:
+                if status == cp_model.INFEASIBLE and excluded_count:
+                    return dict(status='NO_ALTERNATIVE', diagnostics=diagnostics,
+                                message='No additional distinct schedule exists under the current rules. Your saved schedules are still available.')
                 result = {'status': 'INFEASIBLE' if status == cp_model.INFEASIBLE else 'UNKNOWN', 'diagnostics': diagnostics}
                 remaining = deadline - time.monotonic()
                 if status == cp_model.INFEASIBLE and remaining > 0:

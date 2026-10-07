@@ -609,8 +609,8 @@ function boundarySummary(result) {
   return `<h3>Additional preferred boundary shifts</h3><p>These extras used complete preferred blocks and explicit employee consent captured with this schedule. Extras are optional.</p><div class="scroll-x"><table class="data-table"><thead><tr><th>Employee</th><th>Openings / limit</th><th>Closings / limit</th><th>Combined / limit</th><th>Qualifying assigned credits (opening / closing)</th></tr></thead><tbody>${rows.map(r => `<tr><td>${escapeHtml(r.name)}</td><td>${r.openings} / ${r.caps.openings}</td><td>${r.closings} / ${r.caps.closings}</td><td>${r.openings + r.closings} / ${r.caps.combined}</td><td>${r.qualifyingOpenings} / ${r.qualifyingClosings}</td></tr>`).join("")}</tbody></table></div>`;
 }
 
-async function generateSchedule() {
-  if (!FOLDER_ID || GENERATION_JOB) return;
+async function generateSchedule(mode = 'optimize') {
+  if (!FOLDER_ID || GENERATION_JOB || (mode === 'alternative' && !HAS_SAVED_SCHEDULES)) return;
   const revision = VIEW_REVISION, folderId = FOLDER_ID, employeeIds = [...SELECTED];
   clearResult();
   GENERATION_JOB = {folderId, status:'submitting'};
@@ -618,6 +618,7 @@ async function generateSchedule() {
   $("fairnessOutput").innerHTML = "";
   $("generateBtn").disabled = true;
   $("regenerateBtn").disabled = true;
+  $("alternativesBtn").disabled = true;
   await new Promise((r) => setTimeout(r, 30));
 
   if (revision !== VIEW_REVISION) return;
@@ -625,7 +626,7 @@ async function generateSchedule() {
   // A lost POST response may still mean a completed job. Persist its key before
   // sending so a reload can retrieve that exact result without resubmitting.
   sessionStorage.setItem(`generationJob:${folderId}`, requestId);
-  const r = await apiSend("/api/generate", "POST", { seed: Math.floor(Math.random() * 1e9), folderId, employeeIds, requestId });
+  const r = await apiSend("/api/generate", "POST", { seed: Math.floor(Math.random() * 1e9), folderId, employeeIds, requestId, mode });
   if (revision !== VIEW_REVISION) return;
   GENERATION_JOB = null;
   renderFolderControls();
@@ -668,9 +669,9 @@ async function watchGeneration(job, revision) {
     sessionStorage.setItem(`generationJob:${folderId}`, job.jobId);
     const seconds = job.startedAt ? Math.max(0, Math.floor((Date.now()-Date.parse(job.startedAt))/1000)) : 0;
     $("generateMsg").innerHTML = `<div class="msg info" role="status">${job.status === 'queued' ? 'Waiting for the current schedule to finish.' :
-      `Optimizing… ${seconds}s elapsed. Search budget: ${job.timeLimit}s.`}
+      `${job.mode === 'alternative' ? 'Finding a distinct alternative' : 'Optimizing'}… ${seconds}s elapsed. Search budget: ${job.timeLimit}s.`}
       ${job.bestFairness == null ? '' : `Best fairness found: ${job.bestFairness}.`}
-      ${job.fairnessOptimal ? 'The best fairness is proven; refining the remaining goals.' : ''}
+      ${job.fairnessOptimal ? `${job.mode === 'alternative' ? 'The best fairness among the remaining alternatives' : 'The best fairness'} is proven; refining the remaining goals.` : ''}
       ${job.attempts > 1 ? 'Resumed after an interruption, keeping saved progress.' : ''}
       You can use other pages while this runs. Reloading will reconnect.
       <button id="cancelGenerationBtn" class="secondary">Cancel generation</button></div>`;
@@ -734,7 +735,9 @@ async function showGenerationResult(r) {
     `<div class="msg ok">${kind} schedule found in ${result.solveSeconds}s — every hour
       staffed, every rule satisfied. Fairness floor: ${result.fairnessFloor}.</div>` +
     (result.note ? `<div class="msg warn">${escapeHtml(result.note)}</div>` : "");
-  if (result.qualityChange === 'improved') {
+  if (result.generationMode === 'alternative') {
+    msg.innerHTML += '<div class="msg info">A different schedule was saved separately. Fairness may be lower than in another saved schedule. Optimization results here apply to the remaining alternatives. Compare fairness scores in Saved schedules, or open each schedule to see individual results.</div>';
+  } else if (result.qualityChange === 'improved') {
     msg.innerHTML += `<div class="msg ok">${result.fairnessImprovement > 0 ?
       `Fairness improved by ${result.fairnessImprovement} points compared with the best previous run on these inputs.` :
       'Fairness was preserved and another scheduling goal improved.'}</div>`;
@@ -886,8 +889,9 @@ setupFolders();
 $("loginBtn").onclick = login;
 $("passwordInput").addEventListener("keydown", (e) => { if (e.key === "Enter") login(); });
 $("saveSettingsBtn").onclick = saveSettings;
-$("generateBtn").onclick = generateSchedule;
-$("regenerateBtn").onclick = generateSchedule;
+$("generateBtn").onclick = () => generateSchedule();
+$("regenerateBtn").onclick = () => generateSchedule();
+$("alternativesBtn").onclick = () => generateSchedule('alternative');
 $("downloadBtn").onclick = downloadExcel;
 $("refreshDiagBtn").onclick = refreshDiagnostics;
 

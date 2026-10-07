@@ -347,6 +347,52 @@ test('a lost generation response recovers its completed result without another s
   assert.equal(dom.window.sessionStorage.getItem('generationJob:1'),null);
   dom.window.close();
 });
+
+test('alternatives appear after a first saved schedule and submit a separate mode',async()=>{
+  const {dom,run,doc}=await admin();
+  let rows=[], posts=0, captured;
+  run('STAFFING_PLAN={}; FOLDERS=[{id:1,name:"Test"}];');
+  dom.window.fetch=async(url,options={})=>{
+    if(url==='/api/generate') {
+      posts++; captured=JSON.parse(options.body);
+      return {ok:true,status:202,json:async()=>({jobId:'c'.repeat(32),folderId:1,status:'completed',
+        result:{status:'NO_ALTERNATIVE',message:'No additional distinct schedule exists.'}})};
+    }
+    assert.equal(url,'/api/folders/1/schedules');
+    return {ok:true,status:200,json:async()=>rows};
+  };
+  await run('loadSavedSchedules()');
+  assert.equal(doc.getElementById('alternativesBtn').style.display,'none');
+  await doc.getElementById('alternativesBtn').onclick();assert.equal(posts,0);
+  rows=[{id:9,createdAt:'2026-10-07T12:00:00Z',fairnessFloor:600,generationMode:'optimize'},
+        {id:10,createdAt:'2026-10-07T12:01:00Z',fairnessFloor:300,generationMode:'alternative'}];
+  await run('loadSavedSchedules()');
+  assert.equal(doc.getElementById('alternativesBtn').style.display,'inline-block');
+  assert.match(doc.getElementById('savedSchedules').textContent,/Fairness: 600/);
+  assert.match(doc.getElementById('savedSchedules').textContent,/Fairness: 300.*Alternative/);
+  await doc.getElementById('alternativesBtn').onclick();
+  assert.equal(posts,1);assert.equal(captured.mode,'alternative');
+  assert.match(doc.getElementById('generateMsg').textContent,/No additional distinct/);
+  assert.equal(doc.getElementById('savedSchedules').querySelectorAll('[data-open]').length,2);
+  run('clearFolderView();FOLDER_ID=2;renderFolderControls()');
+  assert.equal(doc.getElementById('alternativesBtn').style.display,'none');
+  rows=[];await run('loadSavedSchedules()');
+  assert.equal(doc.getElementById('alternativesBtn').style.display,'none');
+  dom.window.close();
+});
+
+test('alternative completion explains its separate save without claiming the previous best was kept',async()=>{
+  const {dom,run,doc}=await admin();
+  run('loadSavedSchedules=async()=>{}');
+  const schedule=Object.fromEntries(config.days.map(d=>[d,Object.fromEntries([7,8].map(h=>[h,{}]))]));
+  const result={status:'OPTIMAL',solveSeconds:5,config,schedule,fairness:[],fairnessFloor:300,
+    generationMode:'alternative',qualityChange:'unchanged'};
+  await run(`showGenerationResult({ok:true,data:${JSON.stringify(result)}})`);
+  assert.match(doc.getElementById('generateMsg').textContent,/different schedule was saved separately/);
+  assert.match(doc.getElementById('generateMsg').textContent,/Fairness may be lower/);
+  assert.doesNotMatch(doc.getElementById('generateMsg').textContent,/best previous schedule was kept/);
+  dom.window.close();
+});
 test('supervisor permission drafts survive failures and selection changes; explicit saves carry versions',async()=>{
   const {dom,run,doc}=await admin(), el=id=>doc.getElementById(id);
   const consent={allowExtraOpenings:true,allowExtraClosings:false,enabled:false,reconfirmationNeeded:true,

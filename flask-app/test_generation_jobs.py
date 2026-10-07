@@ -172,6 +172,92 @@ class GenerationJobTests(unittest.TestCase):
             jobs._thread.join(timeout=5)
             self.assertFalse(jobs._thread.is_alive(), 'Idle runner must stop polling the database')
 
+    def test_alternatives_require_a_first_schedule_and_modes_do_not_deduplicate(self):
+        self.assertEqual(self.post(mode='alternative').status_code, 409)
+        self.assertEqual(self.post(mode='invalid').status_code, 400)
+        first = self.post(requestId='a'*32)
+        self.assertEqual(self.post(mode='alternative').status_code, 409)
+        self.finish()
+        self.assertEqual(self.post(mode='alternative', requestId='a'*32).status_code, 409)
+        alternative = self.post(mode='alternative', requestId='b'*32)
+        self.assertEqual(alternative.status_code, 202)
+        self.assertEqual(alternative.json['mode'], 'alternative')
+        self.assertEqual(self.post().status_code, 409)
+        self.finish()
+        result = self.status(alternative.json['jobId']).json['result']
+        self.assertEqual(result['status'], 'NO_ALTERNATIVE')
+        self.assertEqual(self.post(mode='alternative', requestId='b'*32).json['jobId'], alternative.json['jobId'])
+        with db.connection_context():
+            self.assertEqual(SavedSchedule.select().count(), 1)
+
+    def test_distinct_lower_quality_alternatives_and_optimize_preserves_best(self):
+        with db.connection_context():
+            other = Employee.create(name='Other', is_lead=True, max_hours=40)
+            FolderAvailability.create(folder=self.folder, employee=other, data_json=self.row.data_json)
+        def submit(mode='optimize', **extra):
+            return self.client.post('/api/generate', headers=self.headers,
+                json=dict(folderId=self.folder, employeeIds=[self.employee.id, other.id], mode=mode, **extra))
+        works, scores = [], []
+        # Each of five days has exactly one three-hour shift and two eligible
+        # employees: enumerate all 2**5 distinct assignments through the API.
+        for index in range(32):
+            mode = 'alternative' if index else 'optimize'
+            request_id = f'{index+1:032x}'
+            accepted = submit(mode, requestId=request_id)
+            self.assertEqual(accepted.status_code, 202)
+            if index == 1:
+                claimed = jobs.claim()
+                original = solver.generate_schedule
+                def interrupted(*args, **kwargs):
+                    self.assertIsNone(kwargs['incumbent'])
+                    candidate = original(*args, **kwargs)
+                    with db.connection_context():
+                        GenerationJob.update(checkpoint_json=json.dumps(candidate)).where(GenerationJob.id == claimed[0]).execute()
+                    raise SystemExit('Synthetic worker interruption after checkpoint')
+                with patch.object(solver, 'generate_schedule', side_effect=interrupted), self.assertRaises(SystemExit):
+                    jobs.run_job(claimed[0], claimed[1])
+                with db.connection_context():
+                    GenerationJob.update(lease_until=dt.datetime.utcnow()-dt.timedelta(seconds=1)).where(GenerationJob.id == claimed[0]).execute()
+                with patch.object(solver, 'generate_schedule', wraps=original) as resumed:
+                    self.finish()
+                    self.assertIsNotNone(resumed.call_args.kwargs['incumbent'])
+                self.assertEqual(self.status(claimed[0]).json['attempts'], 2)
+            else:
+                self.finish()
+            result = self.status(accepted.json['jobId']).json['result']
+            self.assertIn(result['status'], ('FEASIBLE','OPTIMAL'))
+            works.append(json.dumps(result['work'], sort_keys=True))
+            scores.append(result['fairnessFloor'])
+            self.assertEqual(submit(mode, requestId=request_id).json['jobId'], accepted.json['jobId'])
+        self.assertEqual(len(set(works)), 32)
+        self.assertLess(scores[-1], scores[0])
+        exhausted = submit('alternative')
+        self.finish()
+        self.assertEqual(self.status(exhausted.json['jobId']).json['result']['status'], 'NO_ALTERNATIVE')
+        optimized = submit()
+        self.finish()
+        best = self.status(optimized.json['jobId']).json['result']
+        self.assertEqual(best['fairnessFloor'], max(scores))
+        self.assertEqual(best['qualityChange'], 'unchanged')
+        self.assertEqual(best['status'], 'OPTIMAL')
+        self.assertEqual(SavedSchedule.select().count(), 33)
+
+    def test_alternative_proof_does_not_short_circuit_unrestricted_optimization(self):
+        self.post()
+        self.finish()
+        with db.connection_context():
+            previous = GenerationJob.select().first()
+            payload = json.loads(previous.payload_json)
+            payload['mode'] = 'alternative'
+            previous.payload_json = json.dumps(payload)
+            previous.save()
+        accepted = self.post()
+        original = solver._solve
+        with patch.object(solver, '_solve', wraps=original) as search:
+            self.finish()
+            self.assertGreater(search.call_count, 0)
+        self.assertEqual(self.status(accepted.json['jobId']).json['result']['status'], 'OPTIMAL')
+
 
 class OptimizationQualityTests(unittest.TestCase):
     def test_more_search_improves_a_valid_but_unfair_baseline(self):

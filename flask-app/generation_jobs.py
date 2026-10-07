@@ -43,10 +43,11 @@ def fingerprint(payload):
 
 def describe(job):
     checkpoint = json.loads(job.checkpoint_json) if job.checkpoint_json else None
+    payload = json.loads(job.payload_json)
     return dict(jobId=job.id, folderId=job.folder_id, status=job.status,
                 attempts=job.attempts, createdAt=job.created_at.isoformat() + 'Z',
                 startedAt=job.started_at.isoformat() + 'Z' if job.started_at else None,
-                timeLimit=json.loads(job.payload_json)['config']['solverTimeLimit'],
+                timeLimit=payload['config']['solverTimeLimit'], mode=payload.get('mode', 'optimize'),
                 bestFairness=checkpoint.get('fairnessFloor') if checkpoint else None,
                 fairnessOptimal=bool(checkpoint and checkpoint.get('fairnessOptimal')),
                 result=json.loads(job.result_json) if job.result_json else None,
@@ -63,14 +64,16 @@ def enqueue(payload):
     prior_request = GenerationJob.get_or_none(GenerationJob.id == request_id) if request_id else None
     if prior_request:
         prior = json.loads(prior_request.payload_json)
-        if prior_request.fingerprint != key or prior['config']['solverTimeLimit'] != payload['config']['solverTimeLimit']:
+        if (prior_request.fingerprint != key or prior['config']['solverTimeLimit'] != payload['config']['solverTimeLimit'] or
+            prior.get('mode', 'optimize') != payload.get('mode', 'optimize')):
             abort(409, 'This request identifier was already used for different inputs.')
         return prior_request
     existing = GenerationJob.get_or_none((GenerationJob.folder == payload['folder']['id']) &
                                          GenerationJob.status.in_(ACTIVE))
     if existing:
         prior = json.loads(existing.payload_json)
-        if existing.fingerprint == key and prior['config']['solverTimeLimit'] == payload['config']['solverTimeLimit']:
+        if (existing.fingerprint == key and prior['config']['solverTimeLimit'] == payload['config']['solverTimeLimit'] and
+            prior.get('mode', 'optimize') == payload.get('mode', 'optimize')):
             return existing
         abort(409, 'This folder already has a generation in progress. Wait for it or cancel it before changing the inputs.')
     if GenerationJob.select().where(GenerationJob.status.in_(ACTIVE)).count() >= MAX_QUEUE:
@@ -135,14 +138,25 @@ def run_job(job_id, owner):
             if not job:
                 return
             payload = json.loads(job.payload_json)
-            # The newest run inherited the earlier best. Include this run's
-            # checkpoint so restart recovery can continue from a valid incumbent.
-            previous = (GenerationJob.select().where((GenerationJob.fingerprint == job.fingerprint) &
-                        GenerationJob.checkpoint_json.is_null(False))
-                        .order_by(GenerationJob.created_at.desc()).first())
-            baseline = json.loads(previous.checkpoint_json) if previous else None
-            if baseline and not {'work','fairnessFloor','fairness','boundarySummary'}.issubset(baseline):
-                baseline = None
+            alternative = payload.get('mode') == 'alternative'
+            # Alternatives must not inherit assignments they explicitly exclude.
+            # Recovery may reuse this job's checkpoint. Optimization compares all
+            # runs so a newer, less fair alternative cannot replace the best.
+            query = GenerationJob.select().where((GenerationJob.fingerprint == job.fingerprint) &
+                                                 GenerationJob.checkpoint_json.is_null(False))
+            if alternative:
+                query = query.where(GenerationJob.id == job.id)
+            candidates = []
+            for previous in query:
+                candidate = json.loads(previous.checkpoint_json)
+                if not {'work','fairnessFloor','fairness','boundarySummary'}.issubset(candidate):
+                    continue
+                if not alternative and json.loads(previous.payload_json).get('mode') == 'alternative':
+                    # Proof over the remaining alternatives is not global proof.
+                    candidate.update(status='FEASIBLE', fairnessOptimal=False, optimizationStages=[])
+                candidates.append(candidate)
+            baseline = max(candidates, key=lambda r: (web.solver_module.schedule_quality(r, payload['employees'], payload['config']),
+                                                      r.get('status') == 'OPTIMAL'), default=None)
         cfg = dict(payload['config'])
         cfg['solverWorkers'] = max(1, min(int(cfg.get('solverWorkers', 8)),
                                        int(os.environ.get('GENERATION_SOLVER_WORKERS', '1'))))
@@ -159,7 +173,10 @@ def run_job(job_id, owner):
 
         with web.app.app_context():
             kwargs = dict(seed=payload.get('seed'), incumbent=baseline, progress=progress)
+            if alternative:
+                kwargs['excluded_work'] = payload['excludedWork']
             result = web.solver_module.generate_schedule(payload['employees'], payload['availability'], cfg, **kwargs)
+            result['generationMode'] = payload.get('mode', 'optimize')
             with db.connection_context(), write_transaction():
                 if not owned(job_id, owner):
                     return

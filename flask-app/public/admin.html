@@ -71,8 +71,10 @@
       <div class="row">
         <button id="generateBtn">Generate schedule</button>
         <button id="regenerateBtn" class="secondary" style="display:none;">Optimize again</button>
+        <button id="alternativesBtn" class="secondary" style="display:none;">Generate alternatives</button>
         <button id="downloadBtn" class="secondary" style="display:none;">Download .xlsx</button>
       </div>
+      <p class="hint">After saving a first schedule, Generate alternatives looks for different assignments and saves each result separately. Alternatives may be less fair; compare their fairness scores below. Optimize again keeps the best quality found for the current inputs.</p>
       <div id="generatorSelection"></div>
       <h3>Saved schedules</h3><div id="savedSchedules"></div>
       <div id="generateMsg"></div>

@@ -199,6 +199,24 @@ not proof that improvement is impossible. An `OPTIMAL` result proves all four
 goals; repeating those unchanged inputs returns it without another search.
 Jobs created before this feature do not have a reusable generation fingerprint.
 
+**Generate alternatives** appears only after the viewed folder has a saved
+weekday schedule, including older saved schedules. It freezes all saved weekday
+assignments in that folder and excludes compatible complete employee/hour
+assignments from the search. Slot reordering does not count as a new schedule.
+Each feasible alternative is saved separately and still optimizes the same four
+goals within the remaining choices; its fairness can be lower. Saved schedules
+show their fairness floors and can be opened to compare individual results.
+If no distinct assignment remains, the job reports that without saving a duplicate.
+A time-limited search with no result does not prove that alternatives are exhausted.
+
+Alternative jobs use the same queue, cancellation, fencing and recovery as
+optimization jobs. Recovery reuses only that alternative job's own checkpoint.
+**Optimize again** compares matching checkpoints across all runs and keeps the
+best quality, even if the newest alternative is less fair. Optimality proofs from
+an alternative's restricted search are not reused as proofs for unrestricted
+optimization. Generating alternatives and optimizing cannot run simultaneously
+in the same folder. No new services or schema changes are required.
+
 ### Returning after inactivity
 
 Render's Free web service sleeps after 15 minutes without inbound traffic.
