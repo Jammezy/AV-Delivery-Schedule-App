@@ -63,7 +63,10 @@ app.app.run(host='127.0.0.1',port=5126,use_reloader=False)
     await page.locator('.weekend-formatted').screenshot({path:path.join(output,'weekend-desktop.png')});
     await page.setViewportSize({width:390,height:844});
     assert.equal(await page.locator('#wkndDownloadBtn').isVisible(),true);
-    assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
+    const mobile=await page.evaluate(()=>({width:window.innerWidth,scrollWidth:document.documentElement.scrollWidth,
+      overflow:[...document.querySelectorAll('#tab-weekend *')].filter(el=>el.getBoundingClientRect().right>window.innerWidth)
+        .slice(0,5).map(el=>({tag:el.tagName,id:el.id,text:el.textContent.slice(0,60)}))}));
+    assert.ok(mobile.scrollWidth<=mobile.width,JSON.stringify(mobile));
     await page.locator('.weekend-formatted').screenshot({path:path.join(output,'weekend-mobile.png')});
     assert.deepEqual(errors,[]);
     console.log('Weekend browser: generated, saved, reopened, downloaded and checked desktop/mobile layouts.');
