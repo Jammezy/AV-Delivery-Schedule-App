@@ -15,7 +15,7 @@ os.environ.setdefault('ADMIN_PASSWORD', 'scope-test')
 os.environ.setdefault('COLLECTION_ENCRYPTION_KEY', Fernet.generate_key().decode())
 os.environ.setdefault('COLLECTION_VERIFIER_KEY', secrets.token_hex(32))
 import app as web
-from flask.testing import FlaskClient
+from generation_test_client import GenerationFixtureClient as FlaskClient
 from models import (db, init_db, Employee, Folder, FolderEmployee, FolderConfig,
                     FolderAvailability, Config, SchemaMigration, SavedSchedule, get_config, enroll_employee)
 
@@ -203,7 +203,7 @@ class FolderIsolationTests(unittest.TestCase):
         self.assertEqual(diagnostic.status_code,200)
         self.assertEqual(diagnostic.json['config']['wFairness'],123)
         captured=[]
-        def solve(roster,availability,cfg,seed=None):
+        def solve(roster,availability,cfg,seed=None,**kwargs):
             captured.append((roster,availability,cfg)); return {'status':'IMPOSSIBLE'}
         with patch.object(web.solver_module,'generate_schedule',solve):
             response=self.client.post('/api/generate',headers=self.headers,json={'folderId':self.a,'employeeIds':[alex['id']]})

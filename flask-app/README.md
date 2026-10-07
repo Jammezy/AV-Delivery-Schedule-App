@@ -147,15 +147,57 @@ The one-worker start command matches the current small-service deployment.
 Admin session hashes now live in the database and survive process restarts;
 the old requirement for one worker solely to keep login tokens in memory no
 longer applies. Login attempt tracking and retention timing still live per
-process. Keep the Gunicorn timeout comfortably above `solverTimeLimit`, allowing
-for database and response work; changing the solver limit may also require
-changing the server timeout. `solverWorkers` controls OR-Tools search threads,
-not Gunicorn web workers.
+process. The automatically loaded `gunicorn.conf.py` selects four request threads.
+Weekday optimization runs in one separate child process, so its time budget is
+independent of the web request timeout. No additional paid worker service or
+queue server is required. `GENERATION_SOLVER_WORKERS` caps OR-Tools threads in
+the child (default **1** for the Free service); stored `solverWorkers` is an upper
+bound. Results report the actual number used.
 
-`/healthz` returns a simple `{"ok": true}` response. It opens the request database
-connection, but it does not query every table or validate collection keys and
-does not trigger retention cleanup. It is not a complete end-to-end collection
-check.
+`/healthz` returns a simple `{"ok": true}` response without a database connection
+or retention cleanup. It checks web-process responsiveness. Generation and
+collection endpoints separately report database failures.
+
+### Durable weekday generation and optimization
+
+`POST /api/generate` returns **202** with a job ID immediately after committing
+the frozen inputs. The supervisor page polls the authenticated, folder-scoped
+`/api/folders/<folderId>/generation-jobs/<jobId>` endpoint every two seconds
+(backs off on connection loss), reconnects after reload, and offers cancellation.
+The `latest` endpoint discovers active jobs even in a new browser session.
+A 32-character hexadecimal `requestId` makes submission retries idempotent.
+At most three jobs can be admitted and only one runs at a time across deploys.
+
+The job table is additive. Inputs, status, checkpoints and finished results live
+in the existing PostgreSQL/SQLite database. A 60-second lease, renewed by the
+web process, and a random ownership token fence old workers. Successful save
+and job completion commit in the same transaction, preventing duplicate schedules.
+Changed/deleted availability or roster inputs are rejected before saving. Jobs
+belong to their folders and participate in deletion previews and 18-month retention.
+
+An interrupted job resumes after its lease expires, when the service is awake.
+Checkpoints retain the best available schedule; at most three recovery attempts
+are automatic. Recovery starts a new search with a fresh budget and a hint from
+saved progress; it does not restore CP-SAT's internal search tree. Cancellation
+stops the child and prevents saving. The supervisor stops database polling as
+soon as the queue is empty. Render may still sleep or restart a Free service;
+leaving the active generation page open keeps ordinary status requests arriving.
+No always-on completion guarantee is possible on Free hosting.
+
+The optimization budget accepts **1–1800 seconds** (up to 30 minutes). Additional
+time searches for a better worst employee deal score, then preferred hours,
+fewer consented overruns and broader boundary-duty sharing. The best result and
+work hints are reused only when roster, availability, consent and scheduling
+rules match exactly; changing time, thread count or random seed does not reset
+the baseline. A model bound protects the previous fairness floor, and a
+lexicographic result comparison preserves the best total quality if no better
+incumbent is found. Changed scheduling inputs start a new comparison.
+
+Results distinguish fairness improvement, improvement to another goal with
+fairness preserved, and no improvement found. Failure to find improvement is
+not proof that improvement is impossible. An `OPTIMAL` result proves all four
+goals; repeating those unchanged inputs returns it without another search.
+Jobs created before this feature do not have a reusable generation fingerprint.
 
 ### Returning after inactivity
 

@@ -339,7 +339,7 @@ class ConsentApiTests(unittest.TestCase):
         self.submit(allowExtraOpenings=False)
         payload = self.permission_payload()
         self.save_permissions(dict(payload,allowExtraOpenings=True,allowExtraClosings=True))
-        def generate(roster,availability,cfg,seed=None):
+        def generate(roster,availability,cfg,seed=None,**kwargs):
             self.assertTrue(cfg['boundaryConsents'][str(payload['employeeId'])]['allowExtraClosings'])
             self.save_permissions(dict(self.permission_payload(),allowExtraClosings=False))
             return {'status':'FEASIBLE','work':{},'schedule':{},'fairness':[]}
@@ -401,7 +401,7 @@ class ConsentApiTests(unittest.TestCase):
         self.submit()
         fid = self.context()['folder']['id']
         eid = self.record()['employeeId']
-        def generate(roster,availability,cfg,seed=None):
+        def generate(roster,availability,cfg,seed=None,**kwargs):
             # Consent-only edits preserve the frozen agreement during solving.
             # A full resubmission now invalidates in-flight generation instead.
             self.client.put('/api/admin/boundary-permissions', headers=self.headers, json=dict(

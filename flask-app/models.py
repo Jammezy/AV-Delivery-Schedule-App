@@ -23,7 +23,7 @@ if DATABASE_URL:
     from playhouse.db_url import connect as _connect
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = "postgresql://" + DATABASE_URL[len("postgres://"):]
-    db = _connect(DATABASE_URL)
+    db = _connect(DATABASE_URL, connect_timeout=5)
 else:
     db = SqliteDatabase(
         os.environ.get("DATABASE_PATH", os.environ.get("DB_PATH", "schedule.db")),
@@ -141,6 +141,25 @@ class SavedSchedule(BaseModel):
     folder = ForeignKeyField(Folder, on_delete="RESTRICT")
     created_at = DateTimeField(default=datetime.datetime.utcnow)
     snapshot_json = TextField()
+
+
+class GenerationJob(BaseModel):
+    # Immutable inputs and fenced leases survive web-service restarts.
+    id = CharField(primary_key=True)
+    folder = ForeignKeyField(Folder, on_delete="CASCADE")
+    fingerprint = CharField(index=True)
+    status = CharField(default="queued", index=True)
+    payload_json = TextField()
+    result_json = TextField(null=True)
+    checkpoint_json = TextField(null=True)
+    error = TextField(null=True)
+    error_status = IntegerField(null=True)
+    owner = CharField(null=True)
+    lease_until = DateTimeField(null=True)
+    created_at = DateTimeField(default=datetime.datetime.utcnow)
+    started_at = DateTimeField(null=True)
+    finished_at = DateTimeField(null=True)
+    attempts = IntegerField(default=0)
 
 
 class SavedWeekendSchedule(BaseModel):
@@ -305,8 +324,8 @@ def validate_config(cfg):
         errors.append("At least one day must be scheduled.")
     if cfg.get("leadSlotName") and cfg["leadSlotName"] not in (cfg.get("slotNames") or []):
         errors.append("The lead slot name must be one of your slot names.")
-    if cfg["solverTimeLimit"] < 1:
-        errors.append("Solver time limit must be at least 1 second.")
+    if not 1 <= cfg["solverTimeLimit"] <= 1800:
+        errors.append("Solver time limit must be between 1 and 1800 seconds (30 minutes).")
     return errors
 
 
@@ -332,7 +351,7 @@ def init_db():
     db.connect(reuse_if_open=True)
     with write_transaction():
         db.create_tables([Employee, Availability, Config, Folder, FolderEmployee, FolderConfig, SchemaMigration, SubmissionState,
-                          FolderAvailability, SavedSchedule, SavedWeekendSchedule, AdminSession, CollectionSettings,
+                          FolderAvailability, SavedSchedule, GenerationJob, SavedWeekendSchedule, AdminSession, CollectionSettings,
                           CollectionCode, IntakeSubmission, EditGrant, SubmissionSession, RateBucket])
         # Additive, serialized, transactional migration; preserve every existing row.
         from playhouse.migrate import SqliteMigrator, PostgresqlMigrator, migrate

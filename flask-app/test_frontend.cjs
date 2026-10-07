@@ -279,6 +279,53 @@ async function admin() {
   await run('renderOverview(true)');
   return {dom,run,doc:dom.window.document};
 }
+
+test('weekday jobs return immediately, prevent duplicate submits and reconnect after reload',async()=>{
+  const {dom,run,doc}=await admin();
+  const originalTimer=dom.window.setTimeout;
+  dom.window.setTimeout=(fn,ms,...args)=>originalTimer(fn,Math.min(ms,10),...args);
+  let submits=0, release, shown;
+  const job={jobId:'a'.repeat(32),folderId:1,status:'running',timeLimit:120,attempts:1,startedAt:new Date().toISOString(),bestFairness:350};
+  dom.window.fetch=async(url,options={})=>{
+    if(url==='/api/generate') {submits++; return {ok:true,status:202,json:async()=>({...job,status:'queued'})};}
+    if(url.includes('/generation-jobs/'))return new Promise(resolve=>release=data=>resolve({ok:true,status:200,json:async()=>data}));
+    throw Error('Unexpected job request '+url);
+  };
+  run('STAFFING_PLAN={}; FOLDERS=[{id:1,name:"Test"}]; showGenerationResult=async r=>window.shown=r.data;');
+  const pending=run('generateSchedule()');
+  while(!release)await new Promise(r=>setTimeout(r,5));
+  assert.equal(doc.getElementById('generateBtn').disabled,true);
+  await run('generateSchedule()');assert.equal(submits,1);
+  assert.equal(dom.window.sessionStorage.getItem('generationJob:1'),job.jobId);
+  run('VIEW_REVISION++; GENERATION_JOB=null;');
+  release(job);await pending;
+  release=null;
+  const resumed=run('resumeGeneration()');
+  while(!release)await new Promise(r=>setTimeout(r,5));
+  release(job);release=null;
+  while(!release)await new Promise(r=>setTimeout(r,5));
+  assert.match(doc.getElementById('generateMsg').textContent,/Best fairness found: 350/);
+  release({...job,status:'completed',result:{status:'FEASIBLE',fairnessFloor:450}});
+  await resumed;
+  assert.equal(dom.window.shown.fairnessFloor,450);
+  assert.equal(submits,1);
+  assert.equal(run('GENERATION_JOB'),null);
+  assert.equal(dom.window.sessionStorage.getItem('generationJob:1'),null);
+  dom.window.close();
+});
+
+test('weekday completion distinguishes fairness gains and no improvement',async()=>{
+  const {dom,run,doc}=await admin();
+  run('loadSavedSchedules=async()=>{}');
+  const schedule=Object.fromEntries(config.days.map(d=>[d,Object.fromEntries([7,8].map(h=>[h,{}]))]));
+  const result={status:'FEASIBLE',solveSeconds:120,config,schedule,fairness:[],fairnessFloor:450,qualityChange:'improved',fairnessImprovement:100};
+  await run(`showGenerationResult({ok:true,data:${JSON.stringify(result)}})`);
+  assert.match(doc.getElementById('generateMsg').textContent,/Fairness improved by 100/);
+  await run(`showGenerationResult({ok:true,data:${JSON.stringify({...result,qualityChange:'unchanged',fairnessImprovement:0})}})`);
+  assert.match(doc.getElementById('generateMsg').textContent,/No quality improvement found/);
+  assert.match(doc.getElementById('generateMsg').textContent,/best previous schedule was kept/);
+  dom.window.close();
+});
 test('supervisor permission drafts survive failures and selection changes; explicit saves carry versions',async()=>{
   const {dom,run,doc}=await admin(), el=id=>doc.getElementById(id);
   const consent={allowExtraOpenings:true,allowExtraClosings:false,enabled:false,reconfirmationNeeded:true,
@@ -509,6 +556,7 @@ async function deletionAdmin({last=false}={}) {
   const reply=(data,ok=true,status=200)=>({ok,status,json:async()=>structuredClone(data)});
   const normalFetch=async(url,opts={})=>{
     requests.push({url,opts});
+    if(url.includes('/generation-jobs/')) return reply(null);
     if (url.endsWith('/deletion-preview')) return reply({...preview,folder:folders.find(f=>url.includes(`/folders/${f.id}/`))});
     if (opts.method==='DELETE' && /^\/api\/folders\/\d+$/.test(url)) {
       deletionCalls++;
@@ -672,6 +720,7 @@ async function scopedAdmin() {
   const writes=[];
   const reply=data=>({ok:true,status:200,json:async()=>structuredClone(data)});
   const fetch=async(url,opts={})=>{
+    if(url.includes('/generation-jobs/')) return reply(null);
     const id=Number(url.match(/\/folders\/(\d+)/)?.[1]||url.match(/folderId=(\d+)/)?.[1]);
     if(opts.method==='PUT') {
       writes.push({url,body:JSON.parse(opts.body)});

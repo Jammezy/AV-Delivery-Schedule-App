@@ -8,6 +8,7 @@ let CONFIG = null;
 let EMPLOYEES = [];
 let LAST_RESULT = null;
 let LAST_DIAG = null;
+let GENERATION_JOB = null;
 let STAFFING_PLAN = null, PLAN_REQUEST = 0, PLAN_STATUS = "";
 const EMPLOYEE_DRAFTS = new Map();
 
@@ -73,6 +74,11 @@ async function apiGet(url) {
     if (!TOKEN || TOKEN !== token || revision !== VIEW_REVISION) return null;
     if (res.status === 401) { clearSession(); return null; }
     if (!res.ok) {
+      if (res.status === 404 && /\/generation-jobs\//.test(url)) {
+        const folderId = url.split('/')[3];
+        sessionStorage.removeItem(`generationJob:${folderId}`);
+        return {missing:true};
+      }
       if (res.status === 404 && (/^\/api\/folders\//.test(url) || /^\/api\/availability\?/.test(url))) {
         await recoverRemovedContent();
       }
@@ -124,6 +130,7 @@ function isClosed(day, h, cfg = CONFIG) {
 
 // ---------------- auth ----------------
 function clearSession() {
+  GENERATION_JOB = null;
   clearCollectionView();
   PERMISSION_DRAFTS.clear();
   STAFFING_PLAN = null; PLAN_REQUEST++; PLAN_STATUS = ""; EMPLOYEE_DRAFTS.clear();
@@ -315,7 +322,7 @@ const SETTINGS_GROUPS = [
   ]],
   ["Fairness and solver", [
     ["burdenWeight", "Weight of an unwanted hour"],
-    ["solverTimeLimit", "Solver time limit (seconds)"],
+    ["solverTimeLimit", "Optimization time budget (seconds, up to 1800)"],
   ]],
 ];
 
@@ -328,7 +335,8 @@ function renderSettings() {
           ${fields.map(([key, label]) => `
             <div style="margin-bottom:10px;">
               <label for="cfg_${key}">${escapeHtml(label)}</label>
-              <input type="number" id="cfg_${key}" value="${CONFIG[key]}">
+              <input type="number" id="cfg_${key}" value="${CONFIG[key]}" ${key === 'solverTimeLimit' ? 'min="1" max="1800"' : ''}>
+              ${key === 'solverTimeLimit' ? '<p class="hint">More time can improve fairness while its optimum is unproven. Runs keep the best quality found for unchanged inputs and stop early when all goals are proven optimal.</p>' : ''}
             </div>`).join("")}
         </div>`).join("")}
       <div class="settings-group">
@@ -602,22 +610,89 @@ function boundarySummary(result) {
 }
 
 async function generateSchedule() {
-  if (!FOLDER_ID) return;
+  if (!FOLDER_ID || GENERATION_JOB) return;
   const revision = VIEW_REVISION, folderId = FOLDER_ID, employeeIds = [...SELECTED];
   clearResult();
-  const msg = $("generateMsg");
-  msg.innerHTML = `<div class="msg info">Solving… this can take up to
-    ${CONFIG.solverTimeLimit} seconds.</div>`;
+  GENERATION_JOB = {folderId, status:'submitting'};
+  $("generateMsg").textContent = 'Starting schedule generation…';
   $("fairnessOutput").innerHTML = "";
   $("generateBtn").disabled = true;
   $("regenerateBtn").disabled = true;
   await new Promise((r) => setTimeout(r, 30));
 
   if (revision !== VIEW_REVISION) return;
-  const r = await apiSend("/api/generate", "POST", { seed: Math.floor(Math.random() * 1e9), folderId, employeeIds });
+  const requestId = crypto.randomUUID().replaceAll('-', '');
+  const r = await apiSend("/api/generate", "POST", { seed: Math.floor(Math.random() * 1e9), folderId, employeeIds, requestId });
   if (revision !== VIEW_REVISION) return;
+  GENERATION_JOB = null;
   renderFolderControls();
   if (!r) return;
+  if (!r.ok) {
+    $("generateMsg").textContent = r.data.error || 'Could not start generation. Checking for an accepted job…';
+    // A disconnected response can still mean the job was accepted.
+    await resumeGeneration();
+    return;
+  }
+  sessionStorage.setItem(`generationJob:${folderId}`, r.data.jobId);
+  await watchGeneration(r.data, revision);
+}
+
+async function resumeGeneration() {
+  if (!FOLDER_ID || GENERATION_JOB) return;
+  const revision = VIEW_REVISION, folderId = FOLDER_ID;
+  const id = sessionStorage.getItem(`generationJob:${folderId}`);
+  const job = await apiGet(`/api/folders/${folderId}/generation-jobs/${id || 'latest'}`);
+  if (!job || revision !== VIEW_REVISION) return;
+  if (job.missing) return;
+  if (['queued','running'].includes(job.status) || id) await watchGeneration(job, revision);
+}
+
+async function watchGeneration(job, revision) {
+  const folderId = job.folderId;
+  let delay = 2000;
+  while (revision === VIEW_REVISION && TOKEN && folderId === FOLDER_ID) {
+    GENERATION_JOB = job;
+    renderFolderControls();
+    if (!['queued','running'].includes(job.status)) {
+      GENERATION_JOB = null;
+      sessionStorage.removeItem(`generationJob:${folderId}`);
+      renderFolderControls();
+      if (job.status === 'completed') await showGenerationResult({ok:true, data:job.result});
+      else $("generateMsg").textContent = job.error || 'Schedule generation cancelled.';
+      return;
+    }
+    sessionStorage.setItem(`generationJob:${folderId}`, job.jobId);
+    const seconds = job.startedAt ? Math.max(0, Math.floor((Date.now()-Date.parse(job.startedAt))/1000)) : 0;
+    $("generateMsg").innerHTML = `<div class="msg info" role="status">${job.status === 'queued' ? 'Waiting for the current schedule to finish.' :
+      `Optimizing… ${seconds}s elapsed. Search budget: ${job.timeLimit}s.`}
+      ${job.bestFairness == null ? '' : `Best fairness found: ${job.bestFairness}.`}
+      ${job.fairnessOptimal ? 'The best fairness is proven; refining the remaining goals.' : ''}
+      ${job.attempts > 1 ? 'Resumed after an interruption, keeping saved progress.' : ''}
+      You can use other pages while this runs. Reloading will reconnect.
+      <button id="cancelGenerationBtn" class="secondary">Cancel generation</button></div>`;
+    $("cancelGenerationBtn").onclick = async () => {
+      $("cancelGenerationBtn").disabled = true;
+      const response = await apiSend(`/api/folders/${folderId}/generation-jobs/${job.jobId}/cancel`, 'POST', {});
+      if (response?.ok && revision === VIEW_REVISION) job = response.data;
+    };
+    await new Promise(r => setTimeout(r, delay));
+    if (revision !== VIEW_REVISION || !TOKEN) return;
+    const update = await apiGet(`/api/folders/${folderId}/generation-jobs/${job.jobId}`);
+    if (update?.missing) {
+      GENERATION_JOB = null; renderFolderControls();
+      $("generateMsg").textContent = 'This generation job or its folder was removed.';
+      return;
+    }
+    if (update) { job = update; delay = 2000; }
+    else {
+      delay = Math.min(delay * 2, 10000);
+      if (revision === VIEW_REVISION && TOKEN) $("generateMsg").textContent = 'Reconnecting to generation… Your job and saved progress remain in the database.';
+    }
+  }
+}
+
+async function showGenerationResult(r) {
+  const msg = $("generateMsg");
   const result = r.data;
 
   if (!r.ok || result.error) {
@@ -655,6 +730,13 @@ async function generateSchedule() {
     `<div class="msg ok">${kind} schedule found in ${result.solveSeconds}s — every hour
       staffed, every rule satisfied. Fairness floor: ${result.fairnessFloor}.</div>` +
     (result.note ? `<div class="msg warn">${escapeHtml(result.note)}</div>` : "");
+  if (result.qualityChange === 'improved') {
+    msg.innerHTML += `<div class="msg ok">${result.fairnessImprovement > 0 ?
+      `Fairness improved by ${result.fairnessImprovement} points compared with the best previous run on these inputs.` :
+      'Fairness was preserved and another scheduling goal improved.'}</div>`;
+  } else if (result.qualityChange === 'unchanged') {
+    msg.innerHTML += '<div class="msg info">No quality improvement found during this run. The best previous schedule was kept. Extra time may help only when optimality remains unproven.</div>';
+  }
 
   $("fairnessOutput").innerHTML = fairnessTable(result.fairness) + boundarySummary(result);
   $("scheduleOutput").innerHTML = renderPrintableTable(result.schedule, result.config);

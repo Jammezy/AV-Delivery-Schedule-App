@@ -40,6 +40,7 @@ function renderFolderControls() {
   }
   const unavailable = !FOLDER_ID || FOLDER_LOADING || DELETION_BUSY || !CONFIG || !STAFFING_PLAN;
   for (const id of ['saveSettingsBtn','generateBtn','regenerateBtn','wkndGenerateBtn']) $(id).disabled = unavailable;
+  for (const id of ['generateBtn','regenerateBtn']) $(id).disabled = unavailable || Boolean(GENERATION_JOB);
   document.querySelectorAll('#employeeTableWrap input, #employeeTableWrap button, #settingsForm input, #settingsForm select').forEach(el => el.disabled = unavailable);
   document.querySelectorAll('#employeeTableWrap input, #employeeTableWrap button').forEach(el => el.disabled = unavailable || EMPLOYEES_SAVING);
   $('saveAllEmployeesBtn').disabled = unavailable || EMPLOYEES_SAVING || !EMPLOYEES.length;
@@ -64,6 +65,7 @@ function clearFolderView() {
   $('employeesSaveMsg').textContent = '';
   for (const id of ['employeeTableWrap','settingsForm','settingsMsg','diagnosticsStaffingPlan','employeesStaffingPlan']) $(id).innerHTML = '';
   VIEW_REVISION++;
+  GENERATION_JOB = null;
   PINNED = PREVIEWED = null;
   SELECTED = new Set(); OVERVIEW = null; LAST_DIAG = null;
   clearResult(); clearWeekendView(); closeEditAvailabilityModal();
@@ -109,7 +111,10 @@ async function changeFolder() {
     if (revision !== VIEW_REVISION) return;
     await renderCodes();
   } finally {
-    if (revision === VIEW_REVISION) { FOLDER_LOADING = false; renderFolderControls(); }
+    if (revision === VIEW_REVISION) {
+      FOLDER_LOADING = false; renderFolderControls();
+      if (folderId && TOKEN) resumeGeneration();
+    }
   }
 }
 // Supervisor collection windows are independent of weekday staffing settings.
@@ -527,6 +532,7 @@ async function openFolderDeletion() {
     <ul><li>${c.unverifiedResponses || 0} intake responses and ${c.collectionCodes || 0} collection codes</li>
     <li>${c.availabilitySubmissions} accepted availability submissions, including comments and submission timestamps</li>
     <li>${c.weekdaySchedules} saved weekday schedules (Monday–Friday)</li>
+    <li>${c.generationJobs || 0} generation jobs, including any work in progress</li>
     <li>${c.weekendSchedules} saved weekend schedules (Friday evening–Sunday)</li></ul>
     <p>Deletion is permanent and cannot be undone through the app.</p>
     <p>Employee identities and other folders will be preserved. This folder’s roster memberships and scheduling settings will be deleted.</p>

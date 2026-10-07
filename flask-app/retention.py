@@ -5,13 +5,14 @@ from contextlib import contextmanager
 
 from peewee import PostgresqlDatabase, SqliteDatabase, fn
 from models import (db, write_transaction, Folder, FolderAvailability, Availability,
-                    SavedSchedule, SavedWeekendSchedule, SubmissionState, IntakeSubmission, CollectionCode)
+                    SavedSchedule, SavedWeekendSchedule, GenerationJob, SubmissionState, IntakeSubmission, CollectionCode)
 
 CHILDREN = (("availability", FolderAvailability, FolderAvailability.submitted_at),
             ("weekdaySchedules", SavedSchedule, SavedSchedule.created_at),
             ("weekendSchedules", SavedWeekendSchedule, SavedWeekendSchedule.created_at),
             ("intakeResponses", IntakeSubmission, IntakeSubmission.submitted_at),
-            ("collectionCodes", CollectionCode, CollectionCode.created_at))
+            ("collectionCodes", CollectionCode, CollectionCode.created_at),
+            ("generationJobs", GenerationJob, GenerationJob.created_at))
 AGED = CHILDREN + (("legacyAvailability", Availability, Availability.submitted_at),
                    ("folders", Folder, Folder.created_at))
 

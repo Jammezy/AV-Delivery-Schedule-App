@@ -659,7 +659,7 @@ def fairness_report(work_out, employees, availability, cfg, weights):
     return rows
 
 
-def _solve(model, cfg, seed=None, minimize=None, maximize=None, budget=None):
+def _solve(model, cfg, seed=None, minimize=None, maximize=None, budget=None, callback=None):
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = float(
         budget if budget is not None else cfg.get("solverTimeLimit", 30)
@@ -671,7 +671,7 @@ def _solve(model, cfg, seed=None, minimize=None, maximize=None, budget=None):
         model.Minimize(minimize)
     if maximize is not None:
         model.Maximize(maximize)
-    return solver, solver.Solve(model)
+    return solver, solver.Solve(model, callback) if callback else solver.Solve(model)
 
 
 # ------------------------------------------------------------------
@@ -710,7 +710,7 @@ def boundary_report(work_out, employees, availability, cfg):
     return rows
 
 
-def generate_schedule(employees, availability, cfg, seed=None):
+def generate_schedule(employees, availability, cfg, seed=None, incumbent=None, progress=None):
     """Integer lexicographic optimization under one wall-clock deadline.
 
     A feasible fairness incumbent is kept if proof consumes the budget. Refinement
@@ -724,8 +724,56 @@ def generate_schedule(employees, availability, cfg, seed=None):
         return {'status': 'IMPOSSIBLE', 'diagnostics': diagnostics}
     built = _add_fairness(_build(employees, availability, cfg), employees, availability, cfg)
     model = built['model']
+    # Only the job service supplies a baseline, matched to immutable inputs and
+    # all scheduling rules. Execution settings (time/threads/seed) may differ.
+    baseline = incumbent
+    if baseline:
+        baseline = dict(baseline)
+        baseline['work'] = {d: {int(h): names for h, names in hours.items()}
+                            for d, hours in baseline['work'].items()}
+        if baseline.get('status') == 'OPTIMAL':
+            baseline.update(solveSeconds=round(time.monotonic() - started, 2),
+                            qualityChange='unchanged', fairnessImprovement=0,
+                            note='All optimization goals were already proven optimal for these inputs; no further search was needed.')
+            return baseline
+        model.Add(built['worst'] >= baseline['fairnessFloor'])
+        for (i, d, h), var in built['work'].items():
+            model.AddHint(var, int(employees[i]['name'] in baseline['work'][d][h]))
     incumbent = None
     stages = []
+    best = baseline
+
+    def quality(result):
+        work = result['work']
+        return (result['fairnessFloor'],
+                sum(r['preferredSatisfied'] for r in result['fairness']),
+                -sum(r['overrun'] for r in result['boundarySummary']),
+                sum(any(e['name'] in work[d][hour] for d in built['days']
+                        if required_staff(d, hour, cfg) > 0)
+                    for e in employees for hour in (int(cfg['hourStart']), int(cfg['lateHourStart']))))
+
+    def pack(work_and_weekly, completed_stages):
+        work, weekly = work_and_weekly
+        fairness = fairness_report(work, employees, availability, cfg, built['weights'])
+        complete = len(completed_stages) == 4 and all(s['optimal'] for s in completed_stages)
+        fairness_proven = bool(completed_stages and completed_stages[0]['optimal'])
+        return dict(status='OPTIMAL' if complete else 'FEASIBLE', optimized=True,
+                    fairnessOptimal=fairness_proven, optimizationStages=list(completed_stages),
+                    work=work, schedule=assign_slots(work, employees, cfg), weeklyHours=weekly,
+                    fairness=fairness, fairnessFloor=min((r['dealScore'] for r in fairness), default=0),
+                    boundarySummary=boundary_report(work, employees, availability, cfg),
+                    burdenMap={d: {h: built['weights'].get((d, h), 0) for h in built['hours']} for d in built['days']},
+                    diagnostics=diagnostics, solveSeconds=round(time.monotonic() - started, 2))
+
+    class Improvements(cp_model.CpSolverSolutionCallback):
+        def on_solution_callback(self):
+            nonlocal best
+            candidate = pack(_extract(self, built, employees), stages)
+            if best is None or quality(candidate) > quality(best):
+                best = candidate
+                if progress:
+                    progress(candidate)
+
     for name, expression, minimize in [('fairness', built['worst'], False),
                                        ('preference', built['preference'], False),
                                        ('overruns', built['overruns'], True),
@@ -735,9 +783,9 @@ def generate_schedule(employees, availability, cfg, seed=None):
             break
         solver, status = _solve(model, cfg, seed=seed, budget=remaining,
                                 minimize=expression if minimize else None,
-                                maximize=None if minimize else expression)
+                                maximize=None if minimize else expression, callback=Improvements())
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            if incumbent is None:
+            if incumbent is None and best is None:
                 result = {'status': 'INFEASIBLE' if status == cp_model.INFEASIBLE else 'UNKNOWN', 'diagnostics': diagnostics}
                 remaining = deadline - time.monotonic()
                 if status == cp_model.INFEASIBLE and remaining > 0:
@@ -748,29 +796,26 @@ def generate_schedule(employees, availability, cfg, seed=None):
         score = int(solver.Value(expression))
         proven = status == cp_model.OPTIMAL
         stages.append(dict(name=name, score=score, optimal=proven))
+        candidate = pack(incumbent, stages)
+        if best is None or quality(candidate) >= quality(best):
+            best = candidate
+            if progress:
+                progress(candidate)
         model.Add(expression <= score if minimize else expression >= score)
         if not proven:
             break
         model.ClearHints()
         for var in built['work'].values():
             model.AddHint(var, solver.Value(var))
-    if incumbent is None:
+    if best is None:
         return {'status': 'UNKNOWN', 'diagnostics': diagnostics}
-    work_out, weekly = incumbent
-    fairness = fairness_report(work_out, employees, availability, cfg, built['weights'])
-    complete = len(stages) == 4 and all(stage['optimal'] for stage in stages)
-    fairness_proven = bool(stages and stages[0]['optimal'])
-    return {
-        'status': 'OPTIMAL' if complete else 'FEASIBLE', 'optimized': True,
-        'fairnessOptimal': fairness_proven, 'optimizationStages': stages,
-        'note': None if complete else ('Fairness optimum proven; refinement stopped at the shared time limit.' if fairness_proven else 'Valid schedule; fairness optimality was not proven within the time limit.'),
-        'work': work_out, 'schedule': assign_slots(work_out, employees, cfg),
-        'weeklyHours': weekly, 'fairness': fairness,
-        'fairnessFloor': min((r['dealScore'] for r in fairness), default=0),
-        'boundarySummary': boundary_report(work_out, employees, availability, cfg),
-        'burdenMap': {d: {h: built['weights'].get((d, h), 0) for h in built['hours']} for d in built['days']},
-        'diagnostics': diagnostics, 'solveSeconds': round(time.monotonic() - started, 2),
-    }
+    best['solveSeconds'] = round(time.monotonic() - started, 2)
+    best['note'] = None if best['status'] == 'OPTIMAL' else (
+        'Fairness optimum proven; refinement stopped at the shared time limit.' if best.get('fairnessOptimal') else
+        'Valid schedule; fairness optimality was not proven within the time limit.')
+    best['qualityChange'] = 'first' if baseline is None else ('improved' if quality(best) > quality(baseline) else 'unchanged')
+    best['fairnessImprovement'] = None if baseline is None else best['fairnessFloor'] - baseline['fairnessFloor']
+    return best
 
 
 def explain_infeasible(employees, availability, cfg, budget=None):

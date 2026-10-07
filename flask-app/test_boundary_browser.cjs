@@ -95,6 +95,14 @@ async function check(viewport) {
     for(const enabled of [false,true]) {
       await page.request.put('http://127.0.0.1:5098/api/folders/1/config',{headers,data:{allowPreferredBoundaryExtras:enabled}});
       generated=await (await page.request.post('http://127.0.0.1:5098/api/generate',{headers,data:{folderId:1,employeeIds:ids,seed:1}})).json();
+      const jobId=generated.jobId;
+      const deadline=Date.now()+30000;
+      while(['queued','running'].includes(generated.status) && Date.now()<deadline) {
+        await new Promise(r=>setTimeout(r,200));
+        generated=await (await page.request.get(`http://127.0.0.1:5098/api/folders/1/generation-jobs/${jobId}`,{headers})).json();
+      }
+      assert.equal(generated.status,'completed',JSON.stringify(generated));
+      generated=generated.result;
       assert.ok(['OPTIMAL','FEASIBLE'].includes(generated.status),JSON.stringify(generated));
       for(const r of generated.boundarySummary) {
         assert.ok(r.openings-r.qualifyingOpenings<=r.caps.openings);
