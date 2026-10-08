@@ -150,11 +150,31 @@ class GenerationJobTests(unittest.TestCase):
         self.assertEqual(result['work'], original['work'])
         self.assertEqual(result['fairnessFloor'], original['fairnessFloor'])
         self.assertLess(result['solveSeconds'], 5)
-        self.assertEqual(result['solverWorkersUsed'], 1)
+        self.assertEqual(result['solverWorkersUsed'], 3)
         self.client.put(f'/api/folders/{self.folder}/config', headers=self.headers, json={'burdenWeight':4})
         third = self.post().json['jobId']
         self.finish()
         self.assertEqual(self.status(third).json['result']['qualityChange'], 'first')
+
+    def test_solver_worker_limit_reaches_solver_and_saved_result(self):
+        original = solver.generate_schedule
+        # Folder limits and an explicit host override still bound the default.
+        for stored, override, expected in [(8,None,3),(2,None,2),(8,'1',1)]:
+            self.client.put(f'/api/folders/{self.folder}/config', headers=self.headers,
+                            json={'solverWorkers':stored})
+            env = dict(os.environ)
+            env.pop('GENERATION_SOLVER_WORKERS', None)
+            if override is not None:
+                env['GENERATION_SOLVER_WORKERS'] = override
+            with patch.dict(os.environ, env, clear=True), patch.object(solver, 'generate_schedule', wraps=original) as search:
+                accepted = self.post()
+                self.finish()
+            self.assertEqual(search.call_args.args[2]['solverWorkers'], expected)
+            result = self.status(accepted.json['jobId']).json['result']
+            self.assertEqual(result['solverWorkersUsed'], expected)
+            self.assertEqual(result['config']['solverWorkers'], stored)
+            saved = self.client.get(f'/api/folders/{self.folder}/schedules/{result["savedScheduleId"]}',headers=self.headers).json
+            self.assertEqual(saved['result']['solverWorkersUsed'], expected)
 
     def test_real_child_isolated_from_http_and_runner_exits_when_idle(self):
         env = {'DATABASE_PATH':self.path, 'DATABASE_URL':'', 'ADMIN_PASSWORD':web.ADMIN_PASSWORD}
