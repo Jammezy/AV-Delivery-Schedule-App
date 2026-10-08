@@ -159,7 +159,7 @@ def run_job(job_id, owner):
                                                       r.get('status') == 'OPTIMAL'), default=None)
         cfg = dict(payload['config'])
         cfg['solverWorkers'] = max(1, min(int(cfg.get('solverWorkers', 8)),
-                                       int(os.environ.get('GENERATION_SOLVER_WORKERS', '1'))))
+                                       int(os.environ.get('GENERATION_SOLVER_WORKERS', '3'))))
 
         def progress(candidate):
             nonlocal last_checkpoint

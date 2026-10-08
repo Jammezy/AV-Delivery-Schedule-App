@@ -151,8 +151,8 @@ process. The automatically loaded `gunicorn.conf.py` selects four request thread
 Weekday optimization runs in one separate child process, so its time budget is
 independent of the web request timeout. No additional paid worker service or
 queue server is required. `GENERATION_SOLVER_WORKERS` caps OR-Tools threads in
-the child (default **1** for the Free service); stored `solverWorkers` is an upper
-bound. Results report the actual number used.
+the child (default **3**, based on the limited-CPU scheduling comparisons).
+Stored `solverWorkers` is an upper bound. Results report the actual number used.
 
 `/healthz` returns a simple `{"ok": true}` response without a database connection
 or retention cleanup. It checks web-process responsiveness. Generation and
@@ -336,7 +336,7 @@ These keys come from `models.py`; saved folder values may differ from defaults.
 | `requireLeadDuringLate` | Off; independently requires a lead in staffed hours from `lateHourStart`. |
 | `slotNames`, `leadSlotName` | `DLA, A4, A1, A2`, with `DLA` as the lead slot. |
 | `burdenWeight` | 3; penalty multiplier within the fairness score. |
-| `solverTimeLimit`, `solverWorkers` | 30 seconds total solver budget and 8 search threads. |
+| `solverTimeLimit`, `solverWorkers` | 30 seconds total solver budget; stored thread limit 8, with the background solver capped at 3 by default. |
 | `wFairness`, `wPreference`, `wSpread` | Legacy readable keys; do not change weekday objective priority. |
 
 Day and late lead switches can be enabled independently. Closed or unstaffed
